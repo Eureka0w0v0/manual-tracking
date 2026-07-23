@@ -23,9 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model", default=None, help="Path to hand_landmarker.task")
     run.add_argument(
         "--style",
-        choices=("fluid", "wire", "outline"),
-        default="fluid",
-        help="Overlay style (default: fluid)",
+        choices=("fabric", "track", "wire", "outline"),
+        default="fabric",
+        help="Overlay style (default: frame)",
     )
     run.add_argument("--no-source", action="store_true", help="Black bg, no source video")
     run.add_argument("--source-dim", type=float, default=0.35, help="Source dim factor 0-1")
@@ -43,9 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--model", default=None, help="Path to hand_landmarker.task")
     live.add_argument(
         "--style",
-        choices=("fluid", "wire", "outline"),
-        default="fluid",
-        help="Overlay style (default: fluid)",
+        choices=("fabric", "track", "wire", "outline"),
+        default="fabric",
+        help="Overlay style (default: frame)",
     )
     live.add_argument("--no-source", action="store_true", help="Black bg, hide camera image")
     live.add_argument("--source-dim", type=float, default=0.55, help="Camera dim 0-1")

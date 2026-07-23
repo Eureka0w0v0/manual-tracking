@@ -61,7 +61,7 @@ def process_video(
     output_path: str | Path,
     *,
     model_path: str | Path | None = None,
-    style: str = "fluid",
+    style: str = "fabric",
     show_source: bool = True,
     source_dim: float = 0.35,
     trail: int = 6,
