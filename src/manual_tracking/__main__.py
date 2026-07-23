@@ -52,8 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--trail", type=int, default=4, help="Ghost trail frames (live default 4)")
     live.add_argument("--smooth", type=float, default=0.45, help="Landmark smooth 0-0.95")
     live.add_argument("--no-mirror", action="store_true", help="Disable mirror")
-    live.add_argument("--width", type=int, default=960, help="Capture width (default 960)")
-    live.add_argument("--height", type=int, default=540, help="Capture height (default 540)")
+    live.add_argument("--width", type=int, default=1280, help="Capture width (default 1280)")
+    live.add_argument("--height", type=int, default=720, help="Capture height (default 720)")
     live.add_argument(
         "--infer-size",
         type=int,

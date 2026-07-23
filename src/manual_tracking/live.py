@@ -1,15 +1,24 @@
-"""Realtime webcam: two-hand stretch frame fill (hand-frame-glitch structure)."""
+"""Realtime webcam live loop.
+
+Architecture (after review of async negative opts):
+- MediaPipe on a worker thread, but only submit when worker is IDLE
+- Submit a pre-downscaled frame for inference (not full 1280x720 copy)
+- Main thread: camera → draw → imshow; never blocked by detect
+- No discarded full-res memcpy when worker is busy
+"""
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from .pipeline import default_model_path
 from .renderer import VectorOverlayRenderer
-from .tracker import HandTracker
+from .tracker import FrameHands, HandTracker
 
 
 def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
@@ -44,38 +53,119 @@ def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
     )
 
 
+def _infer_size_for(frame_w: int, frame_h: int, infer_max_side: int) -> tuple[int, int, float]:
+    long_side = max(frame_w, frame_h)
+    if infer_max_side <= 0 or long_side <= infer_max_side:
+        return frame_w, frame_h, 1.0
+    scale = infer_max_side / float(long_side)
+    return int(frame_w * scale), int(frame_h * scale), scale
+
+
+class _AsyncHandDetector:
+    """
+    Worker holds HandTracker.
+    submit() only accepted when idle — no discarded copies.
+    Main passes a full-res frame ownership transfer ONLY when idle;
+    worker resizes inside process_bgr (main never INTER_AREA).
+    """
+
+    def __init__(self, tracker: HandTracker) -> None:
+        self._tracker = tracker
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._pending: np.ndarray | None = None
+        self._pending_meta: tuple[int, int] | None = None  # idx, ts
+        self._busy = False
+        self._hands = FrameHands(index=-1, hands=[])
+        self._detect_ms = 0.0
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, name="hand-detect", daemon=True)
+        self._thread.start()
+
+    def idle(self) -> bool:
+        with self._lock:
+            return (not self._busy) and self._pending is None
+
+    def submit(
+        self,
+        frame_bgr: np.ndarray,
+        frame_index: int,
+        timestamp_ms: int,
+    ) -> bool:
+        """Return False if worker busy (caller should skip copy)."""
+        with self._cond:
+            if self._busy or self._pending is not None:
+                return False
+            # frame ownership transfers; caller must not reuse this array
+            self._pending = frame_bgr
+            self._pending_meta = (frame_index, timestamp_ms)
+            self._busy = True
+            self._cond.notify()
+            return True
+
+    def latest(self) -> tuple[FrameHands, float]:
+        with self._lock:
+            return self._hands, self._detect_ms
+
+    def close(self) -> None:
+        with self._cond:
+            self._running = False
+            self._cond.notify()
+        self._thread.join(timeout=2.0)
+
+    def _loop(self) -> None:
+        while True:
+            with self._cond:
+                while self._running and self._pending is None:
+                    self._cond.wait(timeout=0.05)
+                if not self._running and self._pending is None:
+                    return
+                frame = self._pending
+                meta = self._pending_meta
+                self._pending = None
+                self._pending_meta = None
+            if frame is None or meta is None:
+                with self._lock:
+                    self._busy = False
+                continue
+
+            fi, ts = meta
+            t0 = time.perf_counter()
+            try:
+                # tracker.infer_max_side handles downscale + maps coords to full-res
+                hands = self._tracker.process_bgr(frame, fi, ts)
+            except Exception:
+                hands = FrameHands(index=fi, hands=[])
+            dt = (time.perf_counter() - t0) * 1000.0
+            with self._lock:
+                self._hands = hands
+                self._detect_ms = dt
+                self._busy = False
+
+
 def run_live(
     *,
     camera: int = 0,
     model_path: str | Path | None = None,
     style: str = "fabric",
     show_source: bool = True,
-    source_dim: float = 0.75,
+    source_dim: float = 0.65,
     trail: int = 0,
-    smooth: float = 0.45,
+    smooth: float = 0.35,
     mirror: bool = True,
-    width: int = 960,
-    height: int = 540,
+    width: int = 1280,
+    height: int = 720,
     infer_size: int = 480,
     record: str | Path | None = None,
     window_name: str = "Manual Tracking Live  |  Q退出 E强度 S风格 D暗底 R录制",
 ) -> None:
-    """
-    Keys:
-      q / ESC  quit
-      e        cycle fill effect inside stretch box
-      s        cycle style frame/wire/outline
-      d        toggle camera bg / black
-      r        record
-      + / -    brightness
-    """
     model = Path(model_path) if model_path else default_model_path()
     if not model.exists():
         raise FileNotFoundError(f"model missing: {model}")
 
-    styles = ["fabric", "track", "wire", "outline"]
+    styles = ["fabric", "track", "wire"]
     if style not in styles:
-        style = "frame"
+        style = "fabric"
     style_idx = styles.index(style)
 
     renderer = VectorOverlayRenderer(
@@ -83,7 +173,7 @@ def run_live(
         show_source=show_source,
         source_dim=source_dim,
         trail=trail,
-        fast=True,
+        fast=False,
         effect="energy",
     )
 
@@ -96,131 +186,138 @@ def run_live(
     record_path: Path | None = Path(record) if record else None
 
     print("=" * 56)
-    print("  MANUAL TRACKING LIVE — space fabric energy")
-    print("  橙金空间布：手部光晕 + 指尖能量丝 + 掌间薄膜")
-    print(f"  采集 {actual_w}x{actual_h}  推理边 {infer_size}")
-    print("  两手入镜并拉开 — 橙金能量膜/丝线")
-    print("  Q退出 | E切换 energy/calm/hot | S风格 | D暗底 | R录制")
+    print("  MANUAL TRACKING LIVE — fabric (async fixed)")
+    print("  1280x720 + 画质保留；空闲才提交推理小图，禁止丢弃大图拷贝")
+    print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_size}")
+    print("  Q退出 | E强度 | S风格 | D暗底 | R录制")
     print("=" * 56)
 
     frame_index = 0
     t0 = time.perf_counter()
     fps_ema = 0.0
     last_t = t0
-    detect_ms_ema = 0.0
+    draw_ms_ema = 0.0
     last_ts = -1
 
+    # Worker tracker downscales internally (main only copies when idle)
+    tracker = HandTracker(
+        model,
+        smooth=smooth,
+        num_hands=2,
+        infer_max_side=infer_size,
+        min_detection_confidence=0.45,
+        min_presence_confidence=0.45,
+        min_tracking_confidence=0.45,
+    )
+    detector = _AsyncHandDetector(tracker)
+
     try:
-        with HandTracker(
-            model,
-            smooth=smooth,
-            num_hands=2,
-            infer_max_side=infer_size,
-            min_detection_confidence=0.45,
-            min_presence_confidence=0.45,
-            min_tracking_confidence=0.45,
-        ) as tracker:
-            while True:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    print("摄像头读帧失败，退出")
-                    break
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                print("摄像头读帧失败，退出")
+                break
 
-                if detect_ms_ema > 45:
-                    for _ in range(2):
-                        cap.grab()
+            if mirror:
+                frame = cv2.flip(frame, 1)
 
-                if mirror:
-                    frame = cv2.flip(frame, 1)
+            fh, fw = frame.shape[:2]
+            if abs(fw - width) > 8 or abs(fh - height) > 8:
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+                fh, fw = frame.shape[:2]
 
-                timestamp_ms = int((time.perf_counter() - t0) * 1000)
-                if timestamp_ms <= last_ts:
-                    timestamp_ms = last_ts + 1
-                last_ts = timestamp_ms
+            timestamp_ms = int((time.perf_counter() - t0) * 1000)
+            if timestamp_ms <= last_ts:
+                timestamp_ms = last_ts + 1
+            last_ts = timestamp_ms
 
-                t_det0 = time.perf_counter()
-                hands = tracker.process_bgr(frame, frame_index, timestamp_ms)
-                t_det1 = time.perf_counter()
-                out = renderer.render(frame, hands)
-                t_draw1 = time.perf_counter()
+            # Only when worker idle: one full-res ownership copy for detect.
+            # Never copy when busy (no discarded memcpy). Worker resizes.
+            if detector.idle():
+                detector.submit(frame.copy(), frame_index, timestamp_ms)
 
-                det_ms = (t_det1 - t_det0) * 1000
-                draw_ms = (t_draw1 - t_det1) * 1000
-                detect_ms_ema = det_ms if detect_ms_ema <= 1e-3 else detect_ms_ema * 0.85 + det_ms * 0.15
+            hands, detect_ms = detector.latest()
 
-                now = time.perf_counter()
-                inst = 1.0 / max(now - last_t, 1e-3)
-                last_t = now
-                fps_ema = inst if fps_ema <= 1e-3 else fps_ema * 0.85 + inst * 0.15
+            t_draw0 = time.perf_counter()
+            out = renderer.render(frame, hands)
+            draw_ms = (time.perf_counter() - t_draw0) * 1000.0
+            draw_ms_ema = draw_ms if draw_ms_ema <= 1e-3 else draw_ms_ema * 0.85 + draw_ms * 0.15
 
-                n_hands = len(hands.hands)
-                hud = (
-                    f"FPS {fps_ema:4.1f}  det {detect_ms_ema:4.0f}ms  "
-                    f"draw {draw_ms:4.0f}ms  hands:{n_hands}  "
-                    f"{styles[style_idx]}/{renderer.effect}"
-                    f"{'  REC' if recording else ''}"
-                )
-                cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
-                cv2.putText(
-                    out,
-                    hud,
-                    (10, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 255, 200) if recording else (230, 230, 230),
-                    1,
-                    cv2.LINE_AA,
-                )
+            now = time.perf_counter()
+            inst = 1.0 / max(now - last_t, 1e-4)
+            last_t = now
+            fps_ema = inst if fps_ema <= 1e-3 else fps_ema * 0.85 + inst * 0.15
 
-                if recording and writer is not None:
-                    writer.write(out)
-                    cv2.circle(out, (out.shape[1] - 24, 16), 7, (0, 0, 255), -1)
+            n_hands = len(hands.hands)
+            busy = "busy" if not detector.idle() else "idle"
+            hud = (
+                f"FPS {fps_ema:5.1f}  det {detect_ms:5.1f}ms  "
+                f"draw {draw_ms_ema:4.1f}ms  hands:{n_hands}  "
+                f"{styles[style_idx]}/{renderer.effect}  {busy}"
+                f"{'  REC' if recording else ''}"
+            )
+            cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
+            cv2.putText(
+                out,
+                hud,
+                (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 200) if recording else (230, 230, 230),
+                1,
+                cv2.LINE_AA,
+            )
 
-                cv2.imshow(window_name, out)
-                key = cv2.waitKey(1) & 0xFF
+            if recording and writer is not None:
+                writer.write(out)
+                cv2.circle(out, (out.shape[1] - 24, 16), 7, (0, 0, 255), -1)
 
-                if key in (ord("q"), ord("Q"), 27):
-                    break
-                if key in (ord("e"), ord("E")):
-                    name = renderer.next_effect()
-                    print(f"energy → {name}")
-                if key in (ord("s"), ord("S")):
-                    style_idx = (style_idx + 1) % len(styles)
-                    renderer.style = styles[style_idx]
-                    renderer.reset()
-                    print(f"style → {styles[style_idx]}")
-                if key in (ord("d"), ord("D")):
-                    renderer.show_source = not renderer.show_source
-                    print(f"show_source → {renderer.show_source}")
-                if key in (ord("+"), ord("=")):
-                    renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
-                if key in (ord("-"), ord("_")):
-                    renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
-                if key in (ord("r"), ord("R")):
-                    if not recording:
-                        if record_path is None:
-                            out_dir = Path(__file__).resolve().parents[2] / "output"
-                            out_dir.mkdir(parents=True, exist_ok=True)
-                            record_path = out_dir / f"live_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
-                        hh, ww = out.shape[:2]
-                        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                        writer = cv2.VideoWriter(str(record_path), fourcc, 30.0, (ww, hh))
-                        if not writer.isOpened():
-                            print("无法开始录制")
-                            writer = None
-                        else:
-                            recording = True
-                            print(f"REC start → {record_path}")
+            cv2.imshow(window_name, out)
+            key = cv2.waitKey(1) & 0xFF
+
+            if key in (ord("q"), ord("Q"), 27):
+                break
+            if key in (ord("e"), ord("E")):
+                print(f"energy → {renderer.next_effect()}")
+            if key in (ord("s"), ord("S")):
+                style_idx = (style_idx + 1) % len(styles)
+                renderer.style = styles[style_idx]
+                renderer.reset()
+                print(f"style → {styles[style_idx]}")
+            if key in (ord("d"), ord("D")):
+                renderer.show_source = not renderer.show_source
+                print(f"show_source → {renderer.show_source}")
+            if key in (ord("+"), ord("=")):
+                renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
+            if key in (ord("-"), ord("_")):
+                renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
+            if key in (ord("r"), ord("R")):
+                if not recording:
+                    if record_path is None:
+                        out_dir = Path(__file__).resolve().parents[2] / "output"
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        record_path = out_dir / f"live_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+                    hh, ww = out.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(str(record_path), fourcc, 30.0, (ww, hh))
+                    if not writer.isOpened():
+                        print("无法开始录制")
+                        writer = None
                     else:
-                        recording = False
-                        if writer is not None:
-                            writer.release()
-                            writer = None
-                        print(f"REC stop → {record_path}")
-                        record_path = None
+                        recording = True
+                        print(f"REC start → {record_path}")
+                else:
+                    recording = False
+                    if writer is not None:
+                        writer.release()
+                        writer = None
+                    print(f"REC stop → {record_path}")
+                    record_path = None
 
-                frame_index += 1
+            frame_index += 1
     finally:
+        detector.close()
+        tracker.close()
         if writer is not None:
             writer.release()
         cap.release()
