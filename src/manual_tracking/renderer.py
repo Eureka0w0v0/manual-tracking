@@ -5,10 +5,12 @@ mirror — 折纸镜面(抖音 manualtracking / AM, v1 前半):
   双手捏死=双瓣细白线。面 = 反相镜面 clamp(283 - 0.56*bg), 折起的面采样点
   外移并乘冷灰。描边只描自由边, 带 ±2px 色差晕。
 
-screen — 彩色玻璃盒(v1 后半):
-  盒长=两手食指尖距, 端棱=食指尖→小指尖(C 形捧握), 顶面向上后挤出。
-  面色 = 每面一张实测亮度 LUT(顶面蓝=反相型, 前面绿=正相, 翻背=红),
-  顶面采样点下移(折射感)+横条 glitch, 全棱白描边, 对角折痕可见。
+screen — 彩色玻璃盒(v1 后半, 五指驱动的长方体):
+  每只手用五指撑起一个端框架: 前棱=食指尖→小指尖, 进深=拇指尖偏离前棱的
+  分量(五指张开盒子鼓起, 收拢自动塌成点; 双手再合拢=白色种子点)。
+  每面不同特效: 顶面蓝反相 LUT+横条 glitch / 前面·端面绿 LUT /
+  底面翻上来时 X-ray / 翻到背面的面渲染红 LUT。12 棱白描边 +
+  中指/无名指跨手弦线, 对角折痕可见。
 
 banner — TouchDesigner 横幅(v2):
   四角 = 双手食指尖(上边)+拇指尖(下边)。四层条带: 黄阈值头带 /
@@ -86,9 +88,10 @@ COOL_G, COOL_R = 0.86, 0.84
 COOL_START = 0.7  # 亮度低于此值开始变冷
 COOL_RATE = 1.8  # 变冷速度
 MIRROR_SHIFT = 0.35  # 折起的面采样点外移量(跨距比例)
-BOX_DEPTH = 0.26  # 盒子顶面屏幕进深(跨距比例, 实测 0.21-0.30)
 BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(跨距比例, 实测 250-300px@1080)
-BOX_UP_BIAS = 0.9  # 顶面挤出方向里混入的固定俯视分量
+BOX_UP_BIAS = 0.9  # 拇指收拢时合成挤出方向里混入的固定俯视分量
+BOX_MIN_THUMB = 0.18  # 拇指离前棱分量小于 此值×前棱长 → 用合成方向兜底
+BOX_FALLBACK_DEPTH = 0.9  # 兜底进深(前棱长比例)
 # 蓝顶面横条 glitch(实测 h15-40 w50-400 @1080p, 按 720p 采集缩放到 2/3)
 GLITCH_STRIPS = 3
 GLITCH_H = (10, 27)
@@ -137,6 +140,30 @@ def _tri_sign(tri: np.ndarray) -> float:
     """三角形有向面积符号(判断面是否翻到背面)."""
     a, b, c = tri[0], tri[1], tri[2]
     return float(np.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])))
+
+
+def _end_frame(hand: HandPose) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """一只手撑起的盒端框架 (front-top, front-bottom, back-top, back-bottom).
+
+    前棱 = 食指尖→小指尖; 进深 = 拇指尖偏离前棱的分量——五指张开盒子鼓起,
+    五指收拢框架自动塌成一个点。拇指贴回指缝时退回合成垂线方向兜底。
+    """
+    i = hand.points[INDEX_TIP, :2].astype(np.float32)
+    p = hand.points[PINKY_TIP, :2].astype(np.float32)
+    t = hand.points[THUMB_TIP, :2].astype(np.float32)
+    e = p - i
+    length = float(np.linalg.norm(e))
+    e_hat = e / length if length > 6.0 else np.array([0.0, 1.0], np.float32)
+    d = t - i
+    depth = d - float(d @ e_hat) * e_hat
+    if float(np.linalg.norm(depth)) < BOX_MIN_THUMB * max(length, 24.0):
+        up = np.array([e_hat[1], -e_hat[0]], np.float32)
+        if up[1] > 0:
+            up = -up
+        up = up + np.array([0.0, -BOX_UP_BIAS], np.float32)
+        up = up / float(np.linalg.norm(up))
+        depth = up * (BOX_FALLBACK_DEPTH * max(length, 24.0))
+    return i, p, i + depth, p + depth
 
 
 def _seg_cross(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, p4: np.ndarray) -> np.ndarray | None:
@@ -417,58 +444,56 @@ class VectorOverlayRenderer:
         self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose], seed: int
     ) -> None:
         left, right = _left_right(hands)
+        ftL, fbL, btL, bbL = _end_frame(left)
+        ftR, fbR, btR, bbR = _end_frame(right)
 
-        # 端棱 = 食指尖→小指尖(C 形捧握), 盒长 = 两手食指尖距(实测)
-        iL = left.points[INDEX_TIP, :2].astype(np.float32)
-        pL = left.points[PINKY_TIP, :2].astype(np.float32)
-        iR = right.points[INDEX_TIP, :2].astype(np.float32)
-        pR = right.points[PINKY_TIP, :2].astype(np.float32)
-        span = float(np.linalg.norm(iR - iL))
+        span = float(np.linalg.norm(ftR - ftL))
         if span < MIN_SPAN_PX:
+            # 五指汇聚 + 双手合拢 → 白色种子点(盒子出现/收起的中间态)
+            c = (ftL + fbL + ftR + fbR) * 0.25
+            ci = (int(round(float(c[0]))), int(round(float(c[1]))))
+            cv2.circle(canvas, ci, 5, EDGE, -1, cv2.LINE_AA)
+            cv2.circle(canvas, ci, 2, WHITE_HOT, -1, cv2.LINE_AA)
             return
 
-        def _up(i: np.ndarray, p: np.ndarray) -> np.ndarray:
-            """顶面挤出方向: 端棱垂线朝上的一支, 再混入固定俯视分量(相机低头感)."""
-            e = p - i
-            n = float(np.linalg.norm(e))
-            if n < 6.0:
-                return np.array([0.0, -1.0], np.float32)
-            e = e / n
-            up = np.array([e[1], -e[0]], np.float32)
-            if up[1] > 0:
-                up = -up
-            up = up + np.array([0.0, -BOX_UP_BIAS], np.float32)
-            return up / float(np.linalg.norm(up))
+        top = np.array([btL, btR, ftR, ftL], np.float32)
+        front = np.array([ftL, ftR, fbR, fbL], np.float32)
+        bottom = np.array([fbL, fbR, bbR, bbL], np.float32)
+        end_l = np.array([ftL, btL, bbL, fbL], np.float32)
+        end_r = np.array([btR, ftR, fbR, bbR], np.float32)
 
-        depth = BOX_DEPTH * span
-        lb = iL + _up(iL, pL) * depth
-        rb = iR + _up(iR, pR) * depth
+        # 底面/端面只在翻到朝镜头时可见(否则被前/顶面盖住): 端面绿, 底面 X-ray
+        for quad, cmap in ((end_l, GREEN_LUT), (end_r, GREEN_LUT), (bottom, XRAY_CMAP)):
+            if _tri_sign(quad[:3]) > 0:
+                _cmap_fill(canvas, frame_bgr, quad, cmap)
 
-        front = np.array([iL, iR, pR, pL], np.float32)
-        top = np.array([lb, rb, iR, iL], np.float32)
-
-        # 直纹面: 面沿对角线劈成两个三角形, 翻到背面的三角形渲染红色背面;
+        # 直纹面: 顶/前面沿对角线劈成两个三角形, 翻到背面的三角形渲染红色背面;
         # 未折叠(同号)时整面一次填充
-        ref = _tri_sign(front[:3])
         folds: list[tuple[np.ndarray, np.ndarray]] = []
         for quad, lut, shift in (
-            (front, GREEN_LUT, (0.0, 0.0)),
             (top, BLUE_LUT, (0.0, BOX_SAMPLE_K * span)),
+            (front, GREEN_LUT, (0.0, 0.0)),
         ):
             t1 = quad[:3]
             t2 = np.array([quad[2], quad[3], quad[0]], np.float32)
             s1, s2 = _tri_sign(t1), _tri_sign(t2)
             if s1 == s2:
-                _cmap_fill(canvas, frame_bgr, quad, lut if s1 == ref else RED_LUT, shift)
+                _cmap_fill(canvas, frame_bgr, quad, lut if s1 > 0 else RED_LUT, shift)
             else:
-                _cmap_fill(canvas, frame_bgr, t1, lut if s1 == ref else RED_LUT, shift)
-                _cmap_fill(canvas, frame_bgr, t2, lut if s2 == ref else RED_LUT, shift)
+                _cmap_fill(canvas, frame_bgr, t1, lut if s1 > 0 else RED_LUT, shift)
+                _cmap_fill(canvas, frame_bgr, t2, lut if s2 > 0 else RED_LUT, shift)
                 folds.append((quad[0], quad[2]))  # 四角不共面 → 对角折痕描边
 
         self._glitch(canvas, frame_bgr, top, seed)
 
-        for poly in (top, front):
-            cv2.polylines(canvas, [np.round(poly).astype(np.int32)], True, EDGE, 3, cv2.LINE_AA)
+        # 五指连线: 中指/无名指跨手细弦线
+        for tip in (MIDDLE_TIP, RING_TIP):
+            _edge_line(canvas, left.points[tip, :2], right.points[tip, :2], EDGE, 1)
+        # 12 棱线框: 两端矩形 + 四条纵向轨 + 折痕
+        for quad in (end_l, end_r):
+            cv2.polylines(canvas, [np.round(quad).astype(np.int32)], True, EDGE, 3, cv2.LINE_AA)
+        for a, b in ((ftL, ftR), (fbL, fbR), (btL, btR), (bbL, bbR)):
+            _edge_line(canvas, a, b)
         for a, b in folds:
             _edge_line(canvas, a, b)
 
