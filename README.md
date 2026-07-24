@@ -2,11 +2,14 @@
 
 实时手部特效（Python）：
 
-- **`mirror`**：双手拇指+食指之间捏出一块泛白镜面板（抖音 manualtracking / AM 风格）  
-- **`screen`**：同一块板换成黄红横幅夹负片实时画面（TouchDesigner 风格）  
+三种特效的颜色/几何参数全部来自对原视频的逐像素逆向测量（4 个分析代理的报告）：
+
+- **`mirror`**：折纸镜面（v1 前半）——角钉在拇指尖+食指尖；平摊单面、翻手拧麻花 X、捏死压成双瓣细线；面=反相镜面 `clamp(283−0.56×背景)`，折起面变冷灰
+- **`screen`**：彩色玻璃盒（v1 后半）——盒长=食指尖距、端棱=食指→小指；蓝顶面(反相 LUT)+绿前面(正相 LUT)+翻折露红背面；顶面折射采样+横条 glitch，全棱白描边
+- **`banner`**：TouchDesigner 横幅（v2）——黄阈值头带 / X-ray 中窗 / 白分隔线 / 悬出红脚带，全部是摄像头画面的屏幕空间双色调
 - **`wire`**：纯骨架调试（`fabric`/`track`/`outline` 为旧名别名）
 
-手指捏合板子会压扁消失，张开自然展开。
+可调参数集中在 `renderer.py` 顶部 tunables 区。
 
 ```bash
 ./run.sh live
@@ -15,8 +18,7 @@
 
 | 键 | 作用 |
 |---|---|
-| `S` | mirror / screen / wire |
-| `E` | 板面亮度 energy / calm / hot |
+| `S` | mirror / screen / banner / wire |
 | `D` | 实拍底 / 黑底 |
 | `R` | 录制（按实测帧率、不含 HUD） |
 | `Q` | 退出 |

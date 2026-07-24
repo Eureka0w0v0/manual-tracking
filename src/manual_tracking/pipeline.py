@@ -61,7 +61,7 @@ def process_video(
     output_path: str | Path,
     *,
     model_path: str | Path | None = None,
-    style: str = "fabric",
+    style: str = "mirror",
     show_source: bool = True,
     source_dim: float = 0.35,
     smooth: float = 0.55,

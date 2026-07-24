@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 from .pipeline import default_model_path
-from .renderer import VectorOverlayRenderer
+from .renderer import STYLES, VectorOverlayRenderer
 from .tracker import FrameHands, HandTracker
 
 
@@ -51,14 +51,6 @@ def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
         "macOS: 系统设置 → 隐私与安全性 → 摄像头 → 打开终端\n"
         "  cd ~/Claudecode/manual-tracking && ./run.sh live"
     )
-
-
-def _infer_size_for(frame_w: int, frame_h: int, infer_max_side: int) -> tuple[int, int, float]:
-    long_side = max(frame_w, frame_h)
-    if infer_max_side <= 0 or long_side <= infer_max_side:
-        return frame_w, frame_h, 1.0
-    scale = infer_max_side / float(long_side)
-    return int(frame_w * scale), int(frame_h * scale), scale
 
 
 class _AsyncHandDetector:
@@ -156,26 +148,20 @@ def run_live(
     height: int = 720,
     infer_size: int = 480,
     record: str | Path | None = None,
-    window_name: str = "Manual Tracking Live  |  Q退出 E强度 S风格 D暗底 R录制",
+    window_name: str = "Manual Tracking Live  |  Q退出 S风格 D暗底 R录制",
 ) -> None:
     model = Path(model_path) if model_path else default_model_path()
     if not model.exists():
         raise FileNotFoundError(f"model missing: {model}")
 
-    styles = ["mirror", "screen", "wire"]
-    # legacy aliases, consistent with renderer
-    style = {"fabric": "mirror", "track": "screen", "outline": "wire"}.get(style, style)
-    if style not in styles:
-        style = "mirror"
-    style_idx = styles.index(style)
-
+    # renderer 是风格名/别名的唯一规范化入口
     renderer = VectorOverlayRenderer(
-        style=styles[style_idx],
+        style=style,
         show_source=show_source,
         source_dim=source_dim,
-        fast=False,
-        effect="energy",
     )
+    styles = list(STYLES)
+    style_idx = styles.index(renderer.style)
 
     cap = _open_camera(camera, width, height)
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
@@ -186,10 +172,10 @@ def run_live(
     record_path: Path | None = Path(record) if record else None
 
     print("=" * 56)
-    print("  MANUAL TRACKING LIVE — 指间玻璃板 (mirror/screen)")
-    print("  双手拇指+食指捏出一块板，S 切风格，捏合板子消失")
+    print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / TD横幅")
+    print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
     print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_size}")
-    print("  Q退出 | E强度 | S风格 | D暗底 | R录制")
+    print("  Q退出 | S风格 | D暗底 | R录制")
     print("=" * 56)
 
     frame_index = 0
@@ -257,7 +243,7 @@ def run_live(
             hud = (
                 f"FPS {fps_ema:5.1f}  det {detect_ms:5.1f}ms  "
                 f"draw {draw_ms_ema:4.1f}ms  hands:{n_hands}  "
-                f"{styles[style_idx]}/{renderer.effect}  {busy}"
+                f"{styles[style_idx]}  {busy}"
                 f"{'  REC' if recording else ''}"
             )
             cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
@@ -280,12 +266,9 @@ def run_live(
 
             if key in (ord("q"), ord("Q"), 27):
                 break
-            if key in (ord("e"), ord("E")):
-                print(f"energy → {renderer.next_effect()}")
             if key in (ord("s"), ord("S")):
                 style_idx = (style_idx + 1) % len(styles)
                 renderer.style = styles[style_idx]
-                renderer.reset()
                 print(f"style → {styles[style_idx]}")
             if key in (ord("d"), ord("D")):
                 renderer.show_source = not renderer.show_source
