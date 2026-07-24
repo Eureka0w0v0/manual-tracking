@@ -64,7 +64,6 @@ def process_video(
     style: str = "fabric",
     show_source: bool = True,
     source_dim: float = 0.35,
-    trail: int = 6,
     smooth: float = 0.55,
     max_frames: int | None = None,
     progress: bool = True,
@@ -89,7 +88,6 @@ def process_video(
         style=style,
         show_source=show_source,
         source_dim=source_dim,
-        trail=trail,
     )
 
     writer: cv2.VideoWriter | None = None

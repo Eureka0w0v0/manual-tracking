@@ -29,7 +29,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--no-source", action="store_true", help="Black bg, no source video")
     run.add_argument("--source-dim", type=float, default=0.35, help="Source dim factor 0-1")
-    run.add_argument("--trail", type=int, default=6, help="Ghost trail frames")
     run.add_argument("--smooth", type=float, default=0.55, help="Landmark temporal smooth 0-0.95")
     run.add_argument("--max-frames", type=int, default=None, help="Debug: only first N frames")
 
@@ -49,7 +48,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument("--no-source", action="store_true", help="Black bg, hide camera image")
     live.add_argument("--source-dim", type=float, default=0.55, help="Camera dim 0-1")
-    live.add_argument("--trail", type=int, default=4, help="Ghost trail frames (live default 4)")
     live.add_argument("--smooth", type=float, default=0.45, help="Landmark smooth 0-0.95")
     live.add_argument("--no-mirror", action="store_true", help="Disable mirror")
     live.add_argument("--width", type=int, default=1280, help="Capture width (default 1280)")
@@ -77,7 +75,6 @@ def main(argv: list[str] | None = None) -> int:
             style=args.style,
             show_source=not args.no_source,
             source_dim=args.source_dim,
-            trail=args.trail,
             smooth=args.smooth,
             max_frames=args.max_frames,
         )
@@ -96,7 +93,6 @@ def main(argv: list[str] | None = None) -> int:
             style=args.style,
             show_source=not args.no_source,
             source_dim=args.source_dim,
-            trail=args.trail,
             smooth=args.smooth,
             mirror=not args.no_mirror,
             width=args.width,

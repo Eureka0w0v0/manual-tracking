@@ -7,7 +7,6 @@ if [[ ! -d .venv ]]; then
   python3 -m venv .venv
   .venv/bin/pip install -U pip
   .venv/bin/pip install -r requirements.txt
-  .venv/bin/pip install "opencv-python>=4.8.0"
 fi
 
 echo "=========================================="

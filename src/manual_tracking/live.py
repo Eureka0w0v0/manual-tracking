@@ -150,7 +150,6 @@ def run_live(
     style: str = "fabric",
     show_source: bool = True,
     source_dim: float = 0.65,
-    trail: int = 0,
     smooth: float = 0.35,
     mirror: bool = True,
     width: int = 1280,
@@ -164,6 +163,8 @@ def run_live(
         raise FileNotFoundError(f"model missing: {model}")
 
     styles = ["fabric", "track", "wire"]
+    if style == "outline":  # renderer 里 outline 就是 wire 的别名，保持一致
+        style = "wire"
     if style not in styles:
         style = "fabric"
     style_idx = styles.index(style)
@@ -172,7 +173,6 @@ def run_live(
         style=styles[style_idx],
         show_source=show_source,
         source_dim=source_dim,
-        trail=trail,
         fast=False,
         effect="energy",
     )
@@ -248,6 +248,10 @@ def run_live(
             last_t = now
             fps_ema = inst if fps_ema <= 1e-3 else fps_ema * 0.85 + inst * 0.15
 
+            # 录制在画 HUD 之前，成片不带黑条和状态文字
+            if recording and writer is not None:
+                writer.write(out)
+
             n_hands = len(hands.hands)
             busy = "busy" if not detector.idle() else "idle"
             hud = (
@@ -268,8 +272,7 @@ def run_live(
                 cv2.LINE_AA,
             )
 
-            if recording and writer is not None:
-                writer.write(out)
+            if recording:
                 cv2.circle(out, (out.shape[1] - 24, 16), 7, (0, 0, 255), -1)
 
             cv2.imshow(window_name, out)
@@ -299,7 +302,9 @@ def run_live(
                         record_path = out_dir / f"live_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
                     hh, ww = out.shape[:2]
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    writer = cv2.VideoWriter(str(record_path), fourcc, 30.0, (ww, hh))
+                    # 用实测 FPS 录制，避免快放/慢放（无实测值时退回 30）
+                    fps_rec = float(np.clip(fps_ema, 10.0, 60.0)) if fps_ema > 1e-3 else 30.0
+                    writer = cv2.VideoWriter(str(record_path), fourcc, fps_rec, (ww, hh))
                     if not writer.isOpened():
                         print("无法开始录制")
                         writer = None

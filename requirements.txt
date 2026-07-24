@@ -1,4 +1,5 @@
 mediapipe>=0.10.30
-opencv-python-headless>=4.8.0
+# mediapipe 依赖 opencv-contrib-python（含 GUI），显式声明避免混入其他 opencv 发行包
+opencv-contrib-python>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
