@@ -319,7 +319,7 @@ def run_live(
                 renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
             if key in (ord("["), ord("]")):  # screen: 翻转倍率(1.0=1:1, 负值反向)
                 renderer.roll_gain = float(
-                    np.clip(renderer.roll_gain + (0.25 if key == ord("]") else -0.25), -3.0, 3.0)
+                    np.clip(renderer.roll_gain + (0.25 if key == ord("]") else -0.25), -6.0, 6.0)
                 )
                 print(f"roll_gain → {renderer.roll_gain:.2f}")
             if key in (ord(";"), ord("'")):  # screen: 实时调盒子挂多高(掌心↔指弧)

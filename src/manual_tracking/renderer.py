@@ -104,7 +104,11 @@ BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1
 BOX_H_GAIN = 1.14  # 盒真高 / 指弧展开量(食指尖→小指尖); 反解 313/274
 BOX_DEPTH_RATIO = 1.47  # 进深 / 盒真高; 反解 461/313
 BOX_ROLL_BIAS = 0.830  # 静止时的截面转角 rad(=相机俯角, 47.6°); 保证看得见蓝顶面
-BOX_ROLL_GAIN = 2.0  # 掌面朝向 → 绕长轴 roll 的弧度增益; ±1 掌朝向 → ±115°
+# 掌面朝向 → 绕长轴 roll 的弧度增益。实测背红面需要 |ψ| ≥ 110°, 而静止角
+# 是 BOX_ROLL_BIAS=48°, 所以正方向要 +62°、负方向要 −158° 才翻得到背面。
+# gain 2.0 时 ψ ∈ [−67°, +162°]: 负方向差 43° 永远够不到, 正方向也要求
+# _orient 打到 0.545 以上。3.0 让 ψ ∈ [−124°, +220°], 两个方向都能翻到背面。
+BOX_ROLL_GAIN = 3.0
 BOX_AXIS_Z_GAIN = 1.2  # 掌宽比 → 长轴深度分量; 一只手往前伸盒子就指向镜头(0 = 长轴锁在像平面)
 BOX_ANCHOR_LIFT = 0.85  # 锚点在 掌心(0)↔指弧中点(1) 之间的位置; 帧 312 反解最优 0.95
 BOX_DEPTH_BIAS = 0.5  # 锚点在进深方向的位置, 同时也是绕长轴旋转的不动点:
@@ -296,6 +300,7 @@ _BOX_FACES: tuple[tuple[tuple[int, int, int, int], np.ndarray], ...] = (
     ((4, 6, 7, 5), GREEN_LUT),  # 右端面
 )
 _BOX_TOP_FACE = 3  # 顶面在 _BOX_FACES 里的下标(采样偏移 + glitch 只给它)
+_BOX_FACE_TAGS = ("前", "背", "底", "顶", "左", "右")  # HUD 显示当前可见面用
 
 
 def _mirror_lut(cool: float) -> np.ndarray:
@@ -620,6 +625,9 @@ class VectorOverlayRenderer:
             if float(n @ (eye - face_c)) > 0.0:
                 vis.append((float(face_c[2]), fi, idx, lut))
         vis.sort(key=lambda v: v[0])  # toward 小的(远的)先画
+        # HUD 用: 当前哪些面朝着镜头。调 roll 时靠它区分"几何没转到"和
+        # "画了但读不出来"(红背 LUT 在暗底上是全场最暗的一块, 很容易漏看)
+        self.box_debug += "  " + ("+".join(_BOX_FACE_TAGS[v[1]] for v in vis) or "-")
 
         for _, fi, idx, lut in vis:
             quad = scr[list(idx)]
