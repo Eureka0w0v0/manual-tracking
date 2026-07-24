@@ -2,9 +2,9 @@
 
 实时手部特效（Python）：
 
-- **`fabric`**：橙金空间布（抖音 TD 向简化版）— 手部光晕 + 少量指尖能量丝 + 掌间薄膜  
-- **`track`**：更克制的贴手半透明板 + 少量指尖面  
-- **`wire` / `outline`**：调试
+- **`fabric`**：贴手金橙骨架（双手之间不再绘制能量丝/薄膜）  
+- **`track`**：骨架 + 双手指尖间少量半透明面  
+- **`wire` / `outline`**：纯骨架调试
 
 ```bash
 ./run.sh live
@@ -13,10 +13,9 @@
 
 | 键 | 作用 |
 |---|---|
-| `E` | energy / calm / hot |
-| `S` | fabric / track / wire / outline |
+| `S` | fabric / track / wire |
 | `D` | 实拍底 / 黑底 |
-| `R` | 录制 |
+| `R` | 录制（按实测帧率、不含 HUD） |
 | `Q` | 退出 |
 
 ## TouchDesigner
