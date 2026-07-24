@@ -104,7 +104,7 @@ BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1
 BOX_H_GAIN = 1.14  # 盒真高 / 指弧展开量(食指尖→小指尖); 反解 313/274
 BOX_DEPTH_RATIO = 1.47  # 进深 / 盒真高; 反解 461/313
 BOX_ROLL_BIAS = 0.830  # 静止时的截面转角 rad(=相机俯角, 47.6°); 保证看得见蓝顶面
-BOX_ROLL_GAIN = 2.0  # 掌面朝向 → 绕长轴 roll 的弧度增益; ±1 掌朝向 → ±115°, 够翻到红背面
+BOX_ROLL_GAIN = 2.0  # 掌面朝向 → 绕长轴 roll 的弧度增益; ±1 掌朝向 → ±115°
 BOX_AXIS_Z_GAIN = 1.2  # 掌宽比 → 长轴深度分量; 一只手往前伸盒子就指向镜头(0 = 长轴锁在像平面)
 BOX_ANCHOR_LIFT = 0.85  # 锚点在 掌心(0)↔指弧中点(1) 之间的位置; 帧 312 反解最优 0.95
 BOX_DEPTH_BIAS = 0.5  # 锚点在进深方向的位置, 同时也是绕长轴旋转的不动点:
@@ -112,7 +112,14 @@ BOX_DEPTH_BIAS = 0.5  # 锚点在进深方向的位置, 同时也是绕长轴旋
 #   0.5 = 体心落在手上 → 盒子跟着手整体转(手感对), 深度上以手为中心
 #   1   = 后面压在手上
 BOX_FOCAL = 1.10  # 弱透视焦距 = 该值 × max(盒长, 高+深)
-BOX_SMOOTH = 0.6  # 盒高/ψ 两个标量的轻 EMA(全部跨帧状态就这两个)
+BOX_SMOOTH = 0.6  # 盒高/长轴深度的轻 EMA(慢变量, 固定系数够用)
+# ψ 的速度自适应 EMA(与 tracker.py 的 landmark 级 One Euro 同源思路, 但这里
+# 按"帧"而非墙钟计时, 保证离线渲染可复现)。固定 EMA 实测在 0.4s 快速翻手中
+# 恒定落后 31°、手停后还要 5 帧追上——那就是"太滑不跟手"的来源。
+BOX_ROLL_RESP = 0.40  # 静止时每帧吸收的新值比例(= 旧固定 EMA 的 1−0.6, 抖动不劣化)
+BOX_ROLL_RESP_GAIN = 1.35  # 每 (rad/帧) 角速度把上面这个值抬高多少
+BOX_ROLL_RESP_MAX = 0.92  # 上限, 留一点滤波防单帧误检直接甩过去
+BOX_RATE_SMOOTH = 0.5  # 角速度估计自身的 EMA(不平滑的话增益会跟着抖)
 # 蓝顶面横条 glitch(实测 h15-40 w50-400 @1080p, 按 720p 采集缩放到 2/3)
 GLITCH_STRIPS = 3
 GLITCH_H = (10, 27)
@@ -382,6 +389,8 @@ class VectorOverlayRenderer:
         self.roll_gain = BOX_ROLL_GAIN  # 实时可调(live 的 [ ] 键)
         self.anchor_lift = BOX_ANCHOR_LIFT  # 实时可调(live 的 ; ' 键): 盒子挂多高
         self.depth_bias = BOX_DEPTH_BIAS  # 实时可调(live 的 , . 键): 旋转不动点/进深中心
+        self.roll_resp = BOX_ROLL_RESP  # 实时可调(live 的 9 0 键): 旋转跟手程度
+        self._psi_rate = 0.0  # ψ 的角速度估计(rad/帧), 驱动自适应滤波
         self.box_debug = ""  # live HUD 用: 当前 ψ / 双手掌朝向 / 长轴深度
 
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
@@ -536,10 +545,16 @@ class VectorOverlayRenderer:
         else:
             a = BOX_SMOOTH
             height = self._box_ema[0] * a + height_raw * (1.0 - a)
-            psi = self._box_ema[1] * a + psi_raw * (1.0 - a)
             dz = self._box_ema[2] * a + dz_raw * (1.0 - a)
+            # ψ: 转得越快滤波越松 → 静止不抖, 快速翻手仍然跟手
+            prev = self._box_ema[1]
+            self._psi_rate = self._psi_rate * BOX_RATE_SMOOTH + abs(psi_raw - prev) * (
+                1.0 - BOX_RATE_SMOOTH
+            )
+            k = min(self.roll_resp + BOX_ROLL_RESP_GAIN * self._psi_rate, BOX_ROLL_RESP_MAX)
+            psi = prev + (psi_raw - prev) * k
         self._box_ema = (height, psi, dz)
-        self.box_debug = f"psi{np.degrees(psi):+4.0f} oL{oL:+.2f} oR{oR:+.2f} dz{dz:+4.0f}"
+        self.box_debug = f"psi{np.degrees(psi):+5.0f} oL{oL:+.2f} oR{oR:+.2f} dz{dz:+4.0f}"
 
         depth = BOX_DEPTH_RATIO * height
         axis = np.array([span_v[0], span_v[1], dz], np.float32)  # (屏幕x, 屏幕y, 朝观察者)

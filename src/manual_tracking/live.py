@@ -209,7 +209,7 @@ def run_live(
     infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
     print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_txt}")
     print("  Q退出 | S风格 | D暗底 | R录制")
-    print("  screen 调参: [ ] 翻转灵敏度  ; ' 挂多高(掌心↔指弧)  , . 旋转轴(前面↔体心)")
+    print("  screen 调参: [ ] 翻转灵敏度  ; ' 挂多高  , . 旋转轴  9 0 旋转跟手程度")
     print("=" * 56)
 
     frame_index = 0
@@ -280,10 +280,11 @@ def run_live(
                 f"{'  REC' if recording else ''}"
             )
             if renderer.style == "screen" and renderer.box_debug:
-                # 调 roll 时看这个: psi 是盒子绕长轴的角, oL/oR 是双手掌朝向
+                # psi = 盒子绕长轴的角, oL/oR = 双手掌面朝向(驱动 roll 的原始信号)
                 hud += (
                     f"  roll {renderer.roll_gain:.1f}  lift {renderer.anchor_lift:.2f}"
-                    f"  bias {renderer.depth_bias:.2f}  {renderer.box_debug}"
+                    f"  bias {renderer.depth_bias:.2f}  resp {renderer.roll_resp:.2f}"
+                    f"  {renderer.box_debug}"
                 )
             cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
             cv2.putText(
@@ -316,9 +317,9 @@ def run_live(
                 renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
             if key in (ord("-"), ord("_")):
                 renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
-            if key in (ord("["), ord("]")):  # screen: 实时调翻转灵敏度
+            if key in (ord("["), ord("]")):  # screen: 翻转倍率(1.0=1:1, 负值反向)
                 renderer.roll_gain = float(
-                    np.clip(renderer.roll_gain + (0.25 if key == ord("]") else -0.25), 0.0, 6.0)
+                    np.clip(renderer.roll_gain + (0.25 if key == ord("]") else -0.25), -3.0, 3.0)
                 )
                 print(f"roll_gain → {renderer.roll_gain:.2f}")
             if key in (ord(";"), ord("'")):  # screen: 实时调盒子挂多高(掌心↔指弧)
@@ -331,6 +332,11 @@ def run_live(
                     np.clip(renderer.depth_bias + (0.05 if key == ord(".") else -0.05), 0.0, 1.0)
                 )
                 print(f"depth_bias → {renderer.depth_bias:.2f}")
+            if key in (ord("9"), ord("0")):  # screen: 旋转跟手程度(大=跟手, 小=顺滑)
+                renderer.roll_resp = float(
+                    np.clip(renderer.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
+                )
+                print(f"roll_resp → {renderer.roll_resp:.2f}")
             if key in (ord("r"), ord("R")):
                 if not recording:
                     if record_path is None:
