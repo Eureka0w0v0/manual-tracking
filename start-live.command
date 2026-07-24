@@ -30,4 +30,4 @@ else:
 cap.release()
 PY
 
-exec .venv/bin/python -m manual_tracking live --camera 0 --style fabric
+exec .venv/bin/python -m manual_tracking live --camera 0 --style mirror

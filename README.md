@@ -2,9 +2,11 @@
 
 实时手部特效（Python）：
 
-- **`fabric`**：贴手金橙骨架（双手之间不再绘制能量丝/薄膜）  
-- **`track`**：骨架 + 双手指尖间少量半透明面  
-- **`wire` / `outline`**：纯骨架调试
+- **`mirror`**：双手拇指+食指之间捏出一块泛白镜面板（抖音 manualtracking / AM 风格）  
+- **`screen`**：同一块板换成黄红横幅夹负片实时画面（TouchDesigner 风格）  
+- **`wire`**：纯骨架调试（`fabric`/`track`/`outline` 为旧名别名）
+
+手指捏合板子会压扁消失，张开自然展开。
 
 ```bash
 ./run.sh live
@@ -13,7 +15,8 @@
 
 | 键 | 作用 |
 |---|---|
-| `S` | fabric / track / wire |
+| `S` | mirror / screen / wire |
+| `E` | 板面亮度 energy / calm / hot |
 | `D` | 实拍底 / 黑底 |
 | `R` | 录制（按实测帧率、不含 HUD） |
 | `Q` | 退出 |

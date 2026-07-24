@@ -1,7 +1,11 @@
 """Hand overlay renderer.
 
-Hands: bone skeleton ONLY (no palm plates / aura fills).
-Nothing is drawn between the two hands.
+Hands: bone skeleton.
+mirror/screen: opaque plate pinned between the two hands' thumb+index tips,
+textured with a processed copy of the camera frame (抖音 manualtracking 的
+"指间玻璃板"效果):
+  mirror — 泛白镜面倒影板(视频1前半风格)
+  screen — 黄红横幅夹负片实时画面(TouchDesigner 视频风格)
 """
 
 from __future__ import annotations
@@ -11,87 +15,69 @@ import numpy as np
 
 from .landmarks import (
     CONNECTIONS,
-    INDEX_MCP,
     INDEX_TIP,
-    MIDDLE_MCP,
     MIDDLE_TIP,
     PALM_RING,
-    PINKY_MCP,
     PINKY_TIP,
-    RING_MCP,
     RING_TIP,
     THUMB_TIP,
-    WRIST,
 )
 from .tracker import FrameHands, HandPose
 
-# BGR — orange / gold energy
+# BGR
 GOLD = (40, 170, 255)
 ORANGE = (20, 110, 240)
-AMBER = (60, 200, 255)
-DEEP = (10, 40, 90)
 WHITE_HOT = (230, 250, 255)
-SOFT_ORANGE = (30, 90, 200)
+EDGE = (245, 248, 250)  # plate outline
+MIRROR_SIDE = (150, 158, 165)  # plate thickness face (mirror)
+SCREEN_SIDE = (24, 18, 140)  # plate thickness face (screen)
+BAND_YELLOW = (0, 205, 255)
+BAND_RED = (30, 20, 230)
 
 TIP_IDS = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
 _PALM_IDX = np.array(PALM_RING, dtype=np.int32)
+
+GLASS_WHITE = (250, 250, 252)
+
+_STYLE_ALIASES = {
+    "fabric": "mirror",
+    "frame": "mirror",
+    "planes": "mirror",
+    "fluid": "mirror",
+    "track": "screen",
+    "outline": "wire",
+}
 
 
 def _palm_center(hand: HandPose) -> np.ndarray:
     return hand.points[_PALM_IDX, :2].mean(axis=0).astype(np.float32)
 
 
-def _palm_scale(hand: HandPose) -> float:
-    p = hand.points
-    a = p[INDEX_MCP, :2]
-    b = p[PINKY_MCP, :2]
-    c = p[WRIST, :2]
-    return float(max(np.linalg.norm(a - b), np.linalg.norm((a + b) * 0.5 - c), 20.0))
-
-
-def _blend_poly(
-    canvas: np.ndarray,
-    pts: np.ndarray,
-    color: tuple[int, int, int],
-    alpha: float,
-    outline: tuple[int, int, int] | None = None,
-    outline_w: int = 1,
-) -> None:
-    """Alpha-fill polygon on bbox only (quality translucent faces)."""
-    if len(pts) < 3 or alpha <= 0:
-        return
-    poly = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
+def _alpha_fill(canvas: np.ndarray, poly: np.ndarray, color: tuple[int, int, int], a: float) -> None:
+    """Translucent convex-poly fill, bbox-local."""
     h, w = canvas.shape[:2]
-    xs, ys = poly[:, 0, 0], poly[:, 0, 1]
-    x0, x1 = max(0, int(xs.min()) - 2), min(w, int(xs.max()) + 3)
-    y0, y1 = max(0, int(ys.min()) - 2), min(h, int(ys.max()) + 3)
+    p = np.round(poly).astype(np.int32)
+    x0, y0 = max(0, p[:, 0].min() - 1), max(0, p[:, 1].min() - 1)
+    x1, y1 = min(w, p[:, 0].max() + 2), min(h, p[:, 1].max() + 2)
     if x1 <= x0 or y1 <= y0:
         return
-    mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
-    local = poly.copy()
-    local[:, 0, 0] -= x0
-    local[:, 0, 1] -= y0
-    cv2.fillPoly(mask, [local], 255, lineType=cv2.LINE_AA)
     roi = canvas[y0:y1, x0:x1]
-    a = float(np.clip(alpha, 0.0, 1.0))
-    m = (mask > 0)[:, :, None].astype(np.float32)
-    col = np.array(color, np.float32)
-    roi[:] = (roi.astype(np.float32) * (1.0 - a * m) + col * (a * m)).astype(np.uint8)
-    if outline is not None and outline_w > 0:
-        cv2.polylines(canvas, [poly.reshape(-1, 2)], True, outline, outline_w, cv2.LINE_AA)
+    overlay = roi.copy()
+    cv2.fillConvexPoly(overlay, p - (x0, y0), color, cv2.LINE_AA)
+    cv2.addWeighted(overlay, a, roi, 1.0 - a, 0, dst=roi)
 
 
 class VectorOverlayRenderer:
     """
     styles:
-      fabric — skeleton only (between-hand energy removed)
-      track  — skeleton + few tip faces
+      mirror — skeleton + 指间镜面板
+      screen — skeleton + 横幅屏幕板
       wire   — skeleton only
     """
 
     def __init__(
         self,
-        style: str = "fabric",
+        style: str = "mirror",
         *,
         show_source: bool = True,
         source_dim: float = 0.65,
@@ -99,20 +85,16 @@ class VectorOverlayRenderer:
         vignette: bool | None = None,
         effect: str = "energy",
     ) -> None:
-        if style in ("frame", "planes", "fluid"):
-            style = "fabric"
-        if style == "outline":
-            style = "wire"
-        self.style = style if style in ("fabric", "track", "wire") else "fabric"
+        style = _STYLE_ALIASES.get(style, style)
+        self.style = style if style in ("mirror", "screen", "wire") else "mirror"
         self.show_source = show_source
         self.source_dim = float(source_dim)
         self.fast = bool(fast)
         self.vignette = False
         self.effect = effect if effect in ("energy", "calm", "hot") else "energy"
-        self._pull_ema = 0.0
 
     def reset(self) -> None:
-        self._pull_ema = 0.0
+        pass
 
     def next_effect(self) -> str:
         order = ["energy", "calm", "hot"]
@@ -131,15 +113,13 @@ class VectorOverlayRenderer:
             out[:] = (8, 6, 12)
 
         hands = frame_hands.hands
-        if self.style == "wire":
-            for i, h in enumerate(hands):
-                self._skeleton(out, h, i)
-            return out
-        if self.style == "track":
-            self._draw_track(out, hands)
-            return out
+        if self.style in ("mirror", "screen") and len(hands) >= 2:
+            quad = self._plate_quad(hands)
+            if quad is not None:
+                self._draw_plate(out, quad)
 
-        self._draw_fabric(out, hands)
+        for i, h in enumerate(hands):
+            self._skeleton(out, h, i)
         return out
 
     def _skeleton(self, canvas: np.ndarray, hand: HandPose, index: int = 0) -> None:
@@ -156,44 +136,53 @@ class VectorOverlayRenderer:
             cv2.circle(canvas, (x, y), r, WHITE_HOT, -1, cv2.LINE_AA)
             cv2.circle(canvas, (x, y), r, color, 1, cv2.LINE_AA)
 
-    def _pull_state(
-        self, hands: list[HandPose]
-    ) -> tuple[float, float, HandPose, HandPose] | None:
-        if len(hands) < 2:
-            self._pull_ema *= 0.85
-            return None
+    def _plate_quad(self, hands: list[HandPose]) -> np.ndarray | None:
+        """4 corners: L index, R index, R thumb, L thumb (tl, tr, br, bl)."""
         left, right = sorted(hands[:2], key=lambda h: float(_palm_center(h)[0]))
-        dist = float(np.linalg.norm(_palm_center(right) - _palm_center(left)))
-        scale = 0.5 * (_palm_scale(left) + _palm_scale(right))
-        pull = float(np.clip((dist - scale * 0.6) / max(scale * 2.4, 1.0), 0.0, 1.0))
-        self._pull_ema = pull if self._pull_ema < 1e-6 else self._pull_ema * 0.7 + pull * 0.3
-        return self._pull_ema, scale, left, right
+        quad = np.array(
+            [
+                left.points[INDEX_TIP, :2],
+                right.points[INDEX_TIP, :2],
+                right.points[THUMB_TIP, :2],
+                left.points[THUMB_TIP, :2],
+            ],
+            np.float32,
+        )
+        # fingers pinched shut -> plate collapses and disappears
+        if abs(cv2.contourArea(quad.reshape(-1, 1, 2))) < 30.0:
+            return None
+        return quad
 
-    def _draw_fabric(self, canvas: np.ndarray, hands: list[HandPose]) -> None:
-        """Skeleton only — between-hand energy removed by request."""
-        for i, h in enumerate(hands):
-            self._skeleton(canvas, h, i)
+    def _draw_plate(self, canvas: np.ndarray, quad: np.ndarray) -> None:
+        """Pure translucent glass — no image pasted in, background shows through."""
+        k = {"calm": 0.8, "energy": 1.0, "hot": 1.2}[self.effect]
 
-    def _draw_track(self, canvas: np.ndarray, hands: list[HandPose]) -> None:
-        got = self._pull_state(hands)
-        if got is not None:
-            pull, scale, left, right = got
-            if pull > 0.08:
-                for tip, col in (
-                    (INDEX_TIP, (245, 245, 250)),
-                    (MIDDLE_TIP, GOLD),
-                    (RING_TIP, (200, 200, 205)),
-                ):
-                    p0 = left.points[tip, :2].astype(np.float32)
-                    p1 = right.points[tip, :2].astype(np.float32)
-                    v = p1 - p0
-                    ln = float(np.linalg.norm(v))
-                    if ln < scale * 0.35:
-                        continue
-                    n = np.array([-v[1], v[0]], np.float32) / (ln + 1e-6)
-                    thick = scale * (0.08 + 0.18 * pull)
-                    mid = (p0 + p1) * 0.5
-                    dia = np.array([p0, mid + n * thick, p1, mid - n * thick], np.float32)
-                    _blend_poly(canvas, dia, col, 0.28 + 0.4 * pull, outline=DEEP, outline_w=1)
-        for i, h in enumerate(hands):
-            self._skeleton(canvas, h, i)
+        # thickness: translucent slab side under the bottom edge
+        top_len = float(np.linalg.norm(quad[1] - quad[0]))
+        d = float(np.clip(top_len * 0.05, 3.0, 14.0))
+        side = np.array(
+            [quad[3], quad[2], quad[2] + [0.0, d], quad[3] + [0.0, d]],
+            np.float32,
+        )
+        side_col = MIRROR_SIDE if self.style == "mirror" else SCREEN_SIDE
+        _alpha_fill(canvas, side, side_col, 0.5)
+
+        tl, tr, br, bl = quad
+
+        def _lerp_row(t: float) -> tuple[np.ndarray, np.ndarray]:
+            return tl + (bl - tl) * t, tr + (br - tr) * t
+
+        if self.style == "mirror":
+            # white glass sheet + stronger sheen on the top third
+            _alpha_fill(canvas, quad, GLASS_WHITE, min(0.9, 0.45 * k))
+            l3, r3 = _lerp_row(0.35)
+            _alpha_fill(canvas, np.array([tl, tr, r3, l3], np.float32), WHITE_HOT, 0.25)
+        else:
+            # translucent banner: yellow / clear glass / red
+            l1, r1 = _lerp_row(0.16)
+            l2, r2 = _lerp_row(0.84)
+            _alpha_fill(canvas, np.array([tl, tr, r1, l1], np.float32), BAND_YELLOW, min(0.9, 0.7 * k))
+            _alpha_fill(canvas, np.array([l1, r1, r2, l2], np.float32), GLASS_WHITE, min(0.9, 0.3 * k))
+            _alpha_fill(canvas, np.array([l2, r2, br, bl], np.float32), BAND_RED, min(0.9, 0.7 * k))
+
+        cv2.polylines(canvas, [np.round(quad).astype(np.int32)], True, EDGE, 2, cv2.LINE_AA)

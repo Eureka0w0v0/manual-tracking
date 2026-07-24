@@ -147,7 +147,7 @@ def run_live(
     *,
     camera: int = 0,
     model_path: str | Path | None = None,
-    style: str = "fabric",
+    style: str = "mirror",
     show_source: bool = True,
     source_dim: float = 0.65,
     smooth: float = 0.35,
@@ -162,11 +162,11 @@ def run_live(
     if not model.exists():
         raise FileNotFoundError(f"model missing: {model}")
 
-    styles = ["fabric", "track", "wire"]
-    if style == "outline":  # renderer 里 outline 就是 wire 的别名，保持一致
-        style = "wire"
+    styles = ["mirror", "screen", "wire"]
+    # legacy aliases, consistent with renderer
+    style = {"fabric": "mirror", "track": "screen", "outline": "wire"}.get(style, style)
     if style not in styles:
-        style = "fabric"
+        style = "mirror"
     style_idx = styles.index(style)
 
     renderer = VectorOverlayRenderer(
@@ -186,8 +186,8 @@ def run_live(
     record_path: Path | None = Path(record) if record else None
 
     print("=" * 56)
-    print("  MANUAL TRACKING LIVE — fabric (async fixed)")
-    print("  1280x720 + 画质保留；空闲才提交推理小图，禁止丢弃大图拷贝")
+    print("  MANUAL TRACKING LIVE — 指间玻璃板 (mirror/screen)")
+    print("  双手拇指+食指捏出一块板，S 切风格，捏合板子消失")
     print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_size}")
     print("  Q退出 | E强度 | S风格 | D暗底 | R录制")
     print("=" * 56)
