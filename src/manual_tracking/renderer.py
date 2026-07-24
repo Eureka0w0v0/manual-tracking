@@ -1,13 +1,10 @@
-"""Space-fabric hand effect — high visual quality.
+"""Hand overlay renderer.
 
 Hands: bone skeleton ONLY (no palm plates / aura fills).
-Between hands: multi-layer energy filaments + translucent membrane + sparks.
+Nothing is drawn between the two hands.
 """
 
 from __future__ import annotations
-
-import math
-import random
 
 import cv2
 import numpy as np
@@ -87,7 +84,7 @@ def _blend_poly(
 class VectorOverlayRenderer:
     """
     styles:
-      fabric — skeleton + high-quality between-hand energy (default)
+      fabric — skeleton only (between-hand energy removed)
       track  — skeleton + few tip faces
       wire   — skeleton only
     """
@@ -98,7 +95,6 @@ class VectorOverlayRenderer:
         *,
         show_source: bool = True,
         source_dim: float = 0.65,
-        trail: int = 0,
         fast: bool = False,
         vignette: bool | None = None,
         effect: str = "energy",
@@ -110,19 +106,13 @@ class VectorOverlayRenderer:
         self.style = style if style in ("fabric", "track", "wire") else "fabric"
         self.show_source = show_source
         self.source_dim = float(source_dim)
-        self.trail = 0
         self.fast = bool(fast)
         self.vignette = False
         self.effect = effect if effect in ("energy", "calm", "hot") else "energy"
         self._pull_ema = 0.0
-        self._t = 0.0
-        self._sparks: list[list[float]] = []
-        self._rng = random.Random(7)
-        self._glow: np.ndarray | None = None
 
     def reset(self) -> None:
         self._pull_ema = 0.0
-        self._sparks.clear()
 
     def next_effect(self) -> str:
         order = ["energy", "calm", "hot"]
@@ -131,7 +121,6 @@ class VectorOverlayRenderer:
         return self.effect
 
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
-        self._t += 0.05
         if self.show_source:
             if self.source_dim >= 0.98:
                 out = frame_bgr.copy()
@@ -152,13 +141,6 @@ class VectorOverlayRenderer:
 
         self._draw_fabric(out, hands)
         return out
-
-    def _intensity(self) -> float:
-        if self.effect == "calm":
-            return 0.7
-        if self.effect == "hot":
-            return 1.35
-        return 1.0
 
     def _skeleton(self, canvas: np.ndarray, hand: HandPose, index: int = 0) -> None:
         """Bone lines + joints only. No filled palm graphics."""
@@ -188,32 +170,7 @@ class VectorOverlayRenderer:
         return self._pull_ema, scale, left, right
 
     def _draw_fabric(self, canvas: np.ndarray, hands: list[HandPose]) -> None:
-        inten = self._intensity()
-        got = self._pull_state(hands)
-        need_glow = False
-        pull = 0.0
-        scale = 0.0
-        left = right = None
-        if got is not None:
-            pull, scale, left, right = got
-            need_glow = pull >= 0.05
-        else:
-            self._pull_ema *= 0.85
-
-        # Only clear/composite glow when energy will actually be drawn.
-        if need_glow and left is not None and right is not None:
-            if self._glow is None or self._glow.shape != canvas.shape:
-                self._glow = np.zeros_like(canvas)
-            else:
-                self._glow.fill(0)
-            glow = self._glow
-            self._membrane(glow, canvas, left, right, pull, scale, inten)
-            self._filaments(glow, left, right, pull, inten)
-            self._update_sparks(canvas, left, right, pull, inten)
-            cv2.addWeighted(canvas, 1.0, glow, 0.9 * min(inten, 1.2), 0, canvas)
-        else:
-            self._sparks.clear()
-
+        """Skeleton only — between-hand energy removed by request."""
         for i, h in enumerate(hands):
             self._skeleton(canvas, h, i)
 
@@ -240,166 +197,3 @@ class VectorOverlayRenderer:
                     _blend_poly(canvas, dia, col, 0.28 + 0.4 * pull, outline=DEEP, outline_w=1)
         for i, h in enumerate(hands):
             self._skeleton(canvas, h, i)
-
-    def _filaments(
-        self,
-        glow: np.ndarray,
-        left: HandPose,
-        right: HandPose,
-        pull: float,
-        inten: float,
-    ) -> None:
-        pairs = [INDEX_TIP, MIDDLE_TIP, RING_TIP]
-        if pull > 0.4:
-            pairs = [THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP]
-        for tip in pairs:
-            p0 = left.points[tip, :2].astype(np.float32)
-            p1 = right.points[tip, :2].astype(np.float32)
-            self._energy_curve(glow, p0, p1, pull, inten)
-
-    def _energy_curve(
-        self,
-        glow: np.ndarray,
-        p0: np.ndarray,
-        p1: np.ndarray,
-        pull: float,
-        inten: float,
-    ) -> None:
-        """Multi-pass glowing bezier filament."""
-        v = p1 - p0
-        ln = float(np.linalg.norm(v))
-        if ln < 12:
-            return
-        n = np.array([-v[1], v[0]], np.float32) / (ln + 1e-6)
-        wob = math.sin(self._t * 2.3 + ln * 0.01) * (8 + 30 * pull)
-        wob2 = math.cos(self._t * 1.7 + ln * 0.02) * (6 + 20 * pull)
-        c1 = p0 * 0.65 + p1 * 0.35 + n * wob
-        c2 = p0 * 0.35 + p1 * 0.65 - n * wob2
-
-        steps = 16
-        pts = np.zeros((steps + 1, 2), dtype=np.float32)
-        for i in range(steps + 1):
-            tt = i / steps
-            u = 1 - tt
-            pts[i] = (u**3) * p0 + 3 * (u**2) * tt * c1 + 3 * u * (tt**2) * c2 + (tt**3) * p1
-        arr = np.round(pts).astype(np.int32)
-
-        # 3-pass glow: fat outer (no AA) + mid + hot core (AA)
-        base = max(2, int(round((3 + 8 * pull) * inten)))
-        cv2.polylines(glow, [arr], False, DEEP, base + 5, cv2.LINE_8)
-        cv2.polylines(glow, [arr], False, ORANGE, base + 1, cv2.LINE_AA)
-        cv2.polylines(glow, [arr], False, GOLD, max(1, base - 1), cv2.LINE_AA)
-        if pull > 0.45:
-            cv2.polylines(glow, [arr], False, WHITE_HOT, 1, cv2.LINE_AA)
-
-    def _membrane(
-        self,
-        glow: np.ndarray,
-        canvas: np.ndarray,
-        left: HandPose,
-        right: HandPose,
-        pull: float,
-        scale: float,
-        inten: float,
-    ) -> None:
-        """Translucent fabric sheet between palms — restored quality fill + rim."""
-        if pull < 0.08:
-            return
-        cL, cR = _palm_center(left), _palm_center(right)
-        v = cR - cL
-        ln = float(np.linalg.norm(v))
-        if ln < 10:
-            return
-        n = np.array([-v[1], v[0]], np.float32) / (ln + 1e-6)
-        half = scale * (0.25 + 0.55 * pull)
-        wave = math.sin(self._t * 1.8) * scale * 0.08 * pull
-        wave2 = math.cos(self._t * 2.1) * scale * 0.06 * pull
-
-        segs = 10 if not self.fast else 7
-        top: list[np.ndarray] = []
-        bot: list[np.ndarray] = []
-        for i in range(segs + 1):
-            t = i / segs
-            p = cL * (1 - t) + cR * t
-            bulge = math.sin(math.pi * t) * half
-            wiggle = math.sin(self._t * 2.5 + t * 4.0) * wave
-            top.append(p + n * (bulge + wiggle))
-            bot.append(p - n * (bulge * 0.85 + wave2 * math.sin(t * 3 + self._t)))
-        poly = np.array(top + bot[::-1], dtype=np.float32)
-
-        # single translucent membrane fill (merged orange/gold)
-        alpha = (0.16 + 0.30 * pull) * min(inten, 1.25)
-        # pre-mix colors once instead of two float ROI blends
-        mix = (
-            int(ORANGE[0] * 0.7 + GOLD[0] * 0.3),
-            int(ORANGE[1] * 0.7 + GOLD[1] * 0.3),
-            int(ORANGE[2] * 0.7 + GOLD[2] * 0.3),
-        )
-        _blend_poly(canvas, poly, mix, alpha, outline=None)
-
-        # bright rim on glow layer
-        pr = np.round(poly).astype(np.int32)
-        cv2.polylines(glow, [pr], True, GOLD, 3, cv2.LINE_AA)
-        cv2.polylines(glow, [pr], True, WHITE_HOT, 1, cv2.LINE_AA)
-
-        # a few tension lines (not a dense grid)
-        for k, t in enumerate((0.3, 0.5, 0.7)):
-            if pull < 0.2 and k != 1:
-                continue
-            a = top[int(t * segs)]
-            b = bot[int(t * segs)]
-            cv2.line(
-                glow,
-                (int(a[0]), int(a[1])),
-                (int(b[0]), int(b[1])),
-                AMBER if k == 1 else ORANGE,
-                1,
-                cv2.LINE_AA,
-            )
-
-    def _update_sparks(
-        self,
-        canvas: np.ndarray,
-        left: HandPose,
-        right: HandPose,
-        pull: float,
-        inten: float,
-    ) -> None:
-        if pull < 0.12:
-            self._sparks.clear()
-            return
-
-        cL, cR = _palm_center(left), _palm_center(right)
-        spawn = 2 if self.effect == "calm" else 3 if self.effect == "energy" else 5
-        for _ in range(spawn):
-            t = self._rng.random()
-            p = cL * (1 - t) + cR * t
-            p = p + np.array(
-                [self._rng.uniform(-14, 14), self._rng.uniform(-20, 20)],
-                np.float32,
-            )
-            self._sparks.append(
-                [
-                    float(p[0]),
-                    float(p[1]),
-                    self._rng.uniform(-1.8, 1.8),
-                    self._rng.uniform(-3.0, -0.4),
-                    self._rng.uniform(0.45, 1.0),
-                ]
-            )
-        if len(self._sparks) > 36:
-            self._sparks = self._sparks[-36:]
-
-        alive: list[list[float]] = []
-        for x, y, vx, vy, life in self._sparks:
-            life -= 0.035
-            if life <= 0:
-                continue
-            x += vx
-            y += vy
-            r = max(1, int(round(3.5 * life * inten)))
-            col = WHITE_HOT if life > 0.65 else GOLD if life > 0.35 else ORANGE
-            cv2.circle(canvas, (int(x), int(y)), r + 1, DEEP, -1, cv2.LINE_AA)
-            cv2.circle(canvas, (int(x), int(y)), r, col, -1, cv2.LINE_AA)
-            alive.append([x, y, vx, vy, life])
-        self._sparks = alive
