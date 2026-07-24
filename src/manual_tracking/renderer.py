@@ -5,12 +5,19 @@ mirror — 折纸镜面(抖音 manualtracking / AM, v1 前半):
   双手捏死=双瓣细白线。面 = 反相镜面 clamp(283 - 0.56*bg), 折起的面采样点
   外移并乘冷灰。描边只描自由边, 带 ±2px 色差晕。
 
-screen — 彩色玻璃盒(v1 后半, 五指驱动的长方体):
-  每只手用五指撑起一个端框架: 前棱=食指尖→小指尖, 进深=拇指尖偏离前棱的
-  分量(五指张开盒子鼓起, 收拢自动塌成点; 双手再合拢=白色种子点)。
+screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
+  手不再直接钉顶点, 而是给 6 个低噪参数; 长方体在 3D 里造好再投影,
+  刚性和透视是构造出来的, 不靠事后正则化。原片帧 312 逐点配准实测:
+    食指/中指/小指三个指尖共同压在同一条"前棱"上(指弧贴盒子前缘),
+    只有拇指在后侧; 后上角没有任何手指对应, 是几何推出来的第四点。
+  参数: 前面锚点=每手(食指尖+小指尖)/2 → 长轴与盒长; 指弧展开量 → 盒高;
+    _orient(掌面前缩) → 绕长轴 roll。进深取盒高的固定比例。
+  相机俯角与用户 roll 同轴(都绕长轴), 合成单一角 ψ, 无翻面状态机。
+  弱透视 f/(f−toward) 给出真实两点透视(后棱自动短于前棱)。
+  面可见性 = 3D 外法线朝向相机(物理正确), 可见面按远近排序绘制。
   每面不同特效: 顶面蓝反相 LUT+横条 glitch / 前面·端面绿 LUT /
-  底面翻上来时 X-ray / 翻到背面的面渲染红 LUT。12 棱白描边 +
-  中指/无名指跨手弦线, 对角折痕可见。
+  底面 X-ray / 背面红 LUT。只描可见面的棱(背面的棱被实体挡住)。
+  五指收拢 → 盒高→0 塌成扁带; 双手合拢 → 白色种子点。
 
 banner — TouchDesigner 横幅(v2):
   四角 = 双手食指尖(上边)+拇指尖(下边)。四层条带: 黄阈值头带 /
@@ -29,10 +36,12 @@ import numpy as np
 
 from .landmarks import (
     CONNECTIONS,
+    INDEX_DIP,
     INDEX_MCP,
     INDEX_TIP,
     MIDDLE_TIP,
     PALM_RING,
+    PINKY_DIP,
     PINKY_MCP,
     PINKY_TIP,
     RING_TIP,
@@ -78,6 +87,7 @@ def canon_style(name: str) -> str:
 # ---- tunables (哥哥要调效果基本都在这里) ----
 MIN_SPAN_PX = 40.0  # 双手跨距小于此值不画特效
 PINCH_SHUT_PX = 16.0  # 双手捏距都小于此值 → 侧视细线(实测捏合张开 10-34px@1920)
+ROLE_HYST_PX = 25.0  # 左右角色互换需越过的掌心 x 差(防双手并拢时颜色频闪)
 ORIENT_GAIN = 2.2  # 手掌朝向→明暗的灵敏度(越大翻手反应越猛)
 BASE_B = 0.85  # 默认亮度(纸平摊时接近亮白)
 B_SWING = 0.65  # 翻手带来的亮度摆幅
@@ -88,10 +98,21 @@ COOL_G, COOL_R = 0.86, 0.84
 COOL_START = 0.7  # 亮度低于此值开始变冷
 COOL_RATE = 1.8  # 变冷速度
 MIRROR_SHIFT = 0.35  # 折起的面采样点外移量(跨距比例)
-BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(跨距比例, 实测 250-300px@1080)
-BOX_UP_BIAS = 0.9  # 拇指收拢时合成挤出方向里混入的固定俯视分量
-BOX_MIN_THUMB = 0.18  # 拇指离前棱分量小于 此值×前棱长 → 用合成方向兜底
-BOX_FALLBACK_DEPTH = 0.9  # 兜底进深(前棱长比例)
+BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1080)
+# 长方体参数化: 下面四个常数由原片帧 312 的四个角点 + 后/前棱比联立数值反解,
+# 四角残差 RMS 0.3px(盒高 231px), 透视比 0.808 vs 实测 0.81。改动请重跑标定。
+BOX_H_GAIN = 1.14  # 盒真高 / 指弧展开量(食指尖→小指尖); 反解 313/274
+BOX_DEPTH_RATIO = 1.47  # 进深 / 盒真高; 反解 461/313
+BOX_ROLL_BIAS = 0.830  # 静止时的截面转角 rad(=相机俯角, 47.6°); 保证看得见蓝顶面
+BOX_ROLL_GAIN = 2.0  # 掌面朝向 → 绕长轴 roll 的弧度增益; ±1 掌朝向 → ±115°, 够翻到红背面
+BOX_AXIS_Z_GAIN = 1.2  # 掌宽比 → 长轴深度分量; 一只手往前伸盒子就指向镜头(0 = 长轴锁在像平面)
+BOX_ANCHOR_LIFT = 0.85  # 锚点在 掌心(0)↔指弧中点(1) 之间的位置; 帧 312 反解最优 0.95
+BOX_DEPTH_BIAS = 0.5  # 锚点在进深方向的位置, 同时也是绕长轴旋转的不动点:
+#   0   = 前面压在手上(原片位置), 但翻转时是"前棱当轴甩", 盒子整体堆在手后面
+#   0.5 = 体心落在手上 → 盒子跟着手整体转(手感对), 深度上以手为中心
+#   1   = 后面压在手上
+BOX_FOCAL = 1.10  # 弱透视焦距 = 该值 × max(盒长, 高+深)
+BOX_SMOOTH = 0.6  # 盒高/ψ 两个标量的轻 EMA(全部跨帧状态就这两个)
 # 蓝顶面横条 glitch(实测 h15-40 w50-400 @1080p, 按 720p 采集缩放到 2/3)
 GLITCH_STRIPS = 3
 GLITCH_H = (10, 27)
@@ -106,12 +127,6 @@ BANNER_THRESH = 115  # banner 双色调亮度阈值
 
 def _palm_center(hand: HandPose) -> np.ndarray:
     return hand.points[_PALM_IDX, :2].mean(axis=0).astype(np.float32)
-
-
-def _left_right(hands: list[HandPose]) -> tuple[HandPose, HandPose]:
-    """按掌心屏幕 x 排出画面左手/右手."""
-    a, b = sorted(hands[:2], key=lambda h: float(_palm_center(h)[0]))
-    return a, b
 
 
 def _pinch(hand: HandPose) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
@@ -136,34 +151,27 @@ def _orient(hand: HandPose) -> float:
     return float(np.clip(sign * ORIENT_GAIN * area / (scale * scale), -1.0, 1.0))
 
 
-def _tri_sign(tri: np.ndarray) -> float:
-    """三角形有向面积符号(判断面是否翻到背面)."""
-    a, b, c = tri[0], tri[1], tri[2]
-    return float(np.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])))
+def _grip(hand: HandPose) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+    """一只手贡献给长方体的量: 掌心 / 指弧中点 / 指弧展开量 / 掌宽 / 掌面朝向.
 
-
-def _end_frame(hand: HandPose) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """一只手撑起的盒端框架 (front-top, front-bottom, back-top, back-bottom).
-
-    前棱 = 食指尖→小指尖; 进深 = 拇指尖偏离前棱的分量——五指张开盒子鼓起,
-    五指收拢框架自动塌成一个点。拇指贴回指缝时退回合成垂线方向兜底。
+    锚点不取单点, 而是在 掌心↔指弧中点 之间插值(BOX_ANCHOR_LIFT):
+      掌心(PALM_RING 均值)最稳但偏腕——纯用它盒子会挂在手下方;
+      指弧中点是原片实测位置(帧 312 距盒子前面中心 34px, 掌心差 102px);
+      插值兼顾两者: 靠近指弧恢复原片高度, 掺一点掌心衰减指尖噪声。
+    掌宽 |MCP5−MCP17| 是单目深度线索——同一只手离镜头越近投影越大, 两手的
+    掌宽比给出长轴的深度分量, 盒子因此能指向镜头外的方向而不只是绕长轴滚。
     """
-    i = hand.points[INDEX_TIP, :2].astype(np.float32)
-    p = hand.points[PINKY_TIP, :2].astype(np.float32)
-    t = hand.points[THUMB_TIP, :2].astype(np.float32)
-    e = p - i
-    length = float(np.linalg.norm(e))
-    e_hat = e / length if length > 6.0 else np.array([0.0, 1.0], np.float32)
-    d = t - i
-    depth = d - float(d @ e_hat) * e_hat
-    if float(np.linalg.norm(depth)) < BOX_MIN_THUMB * max(length, 24.0):
-        up = np.array([e_hat[1], -e_hat[0]], np.float32)
-        if up[1] > 0:
-            up = -up
-        up = up + np.array([0.0, -BOX_UP_BIAS], np.float32)
-        up = up / float(np.linalg.norm(up))
-        depth = up * (BOX_FALLBACK_DEPTH * max(length, 24.0))
-    return i, p, i + depth, p + depth
+    xy = hand.points[:, :2].astype(np.float32)
+    i = xy[INDEX_TIP] * 0.75 + xy[INDEX_DIP] * 0.25
+    p = xy[PINKY_TIP] * 0.75 + xy[PINKY_DIP] * 0.25
+    palm = float(np.linalg.norm(xy[INDEX_MCP] - xy[PINKY_MCP]))
+    return (
+        _palm_center(hand),
+        (i + p) * 0.5,
+        float(np.linalg.norm(i - p)),
+        palm,
+        _orient(hand),
+    )
 
 
 def _seg_cross(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, p4: np.ndarray) -> np.ndarray | None:
@@ -269,6 +277,19 @@ WHITE_CMAP = _duotone_cmap(BANNER_W_DARK, BANNER_WHITE, BANNER_THRESH, soft=45)
 RED_CMAP = _duotone_cmap(BANNER_R_DARK, BANNER_RED, BANNER_THRESH)
 XRAY_CMAP = _xray_cmap()
 
+# 长方体拓扑: 顶点索引 = x*4 + u*2 + w
+#   x: 0=左端 1=右端 / u: 0=下 1=上 / w: 0=前(贴指弧) 1=后(远离镜头)
+# 绕序无所谓——外法线在运行时用"面心 − 体心"定向, 不靠手工排 CCW。
+_BOX_FACES: tuple[tuple[tuple[int, int, int, int], np.ndarray], ...] = (
+    ((0, 4, 6, 2), GREEN_LUT),  # 前面
+    ((1, 5, 7, 3), RED_LUT),  # 背面(翻过去才露)
+    ((0, 4, 5, 1), XRAY_CMAP),  # 底面(翻上来才露)
+    ((2, 6, 7, 3), BLUE_LUT),  # 顶面(带横条 glitch)
+    ((0, 2, 3, 1), GREEN_LUT),  # 左端面
+    ((4, 6, 7, 5), GREEN_LUT),  # 右端面
+)
+_BOX_TOP_FACE = 3  # 顶面在 _BOX_FACES 里的下标(采样偏移 + glitch 只给它)
+
 
 def _mirror_lut(cool: float) -> np.ndarray:
     """反相镜面的逐通道 LUT: clamp(A - B*bg), 冷灰只压 G/R."""
@@ -340,7 +361,11 @@ def _mirror_fill(
 
 
 class VectorOverlayRenderer:
-    """按 style(见模块 docstring)把手部特效画到帧上; 无跨帧状态."""
+    """按 style(见模块 docstring)把手部特效画到帧上.
+
+    跨帧状态只剩两小份: 盒高/ψ 的标量 EMA、左右角色滞回。
+    (角点级滤波、n̂ 符号滞回、每手卷向 EMA 随刚体参数化一并删除。)
+    """
 
     def __init__(
         self,
@@ -352,6 +377,12 @@ class VectorOverlayRenderer:
         self.style = canon_style(style)
         self.show_source = show_source
         self.source_dim = float(source_dim)
+        self._box_ema: tuple[float, float, float] | None = None  # (盒高, ψ, 长轴深度分量)
+        self._role_ids: tuple[int, int] | None = None  # (左手 sid, 右手 sid)
+        self.roll_gain = BOX_ROLL_GAIN  # 实时可调(live 的 [ ] 键)
+        self.anchor_lift = BOX_ANCHOR_LIFT  # 实时可调(live 的 ; ' 键): 盒子挂多高
+        self.depth_bias = BOX_DEPTH_BIAS  # 实时可调(live 的 , . 键): 旋转不动点/进深中心
+        self.box_debug = ""  # live HUD 用: 当前 ψ / 双手掌朝向 / 长轴深度
 
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
         if self.show_source:
@@ -390,10 +421,34 @@ class VectorOverlayRenderer:
             cv2.circle(canvas, (x, y), r, WHITE_HOT, -1, cv2.LINE_AA)
             cv2.circle(canvas, (x, y), r, color, 1, cv2.LINE_AA)
 
+    def _ordered(self, hands: list[HandPose]) -> tuple[HandPose, HandPose]:
+        """画面左手/右手, 带 25px 滞回——双手并拢时角色不逐帧翻转.
+
+        角色翻转会让面片绕序反号(蓝绿↔红 LUT 频闪)、麻花判定抖动;
+        实测无滞回时并拢悬停每两帧换一次位。
+        """
+        a, b = hands[0], hands[1]
+        xa, xb = float(_palm_center(a)[0]), float(_palm_center(b)[0])
+        ids = (a.track_id, b.track_id)
+        if (
+            self._role_ids is not None
+            and min(ids) >= 0
+            and set(ids) == set(self._role_ids)
+        ):
+            lid = self._role_ids[0]
+            left, right = (a, b) if a.track_id == lid else (b, a)
+            lx, rx = (xa, xb) if a.track_id == lid else (xb, xa)
+            if lx > rx + ROLE_HYST_PX:  # 明确越过才交换角色
+                left, right = right, left
+        else:
+            left, right = (a, b) if xa <= xb else (b, a)
+        self._role_ids = (left.track_id, right.track_id)
+        return left, right
+
     # ---------- mirror: 折纸镜面 ----------
 
     def _draw_sheet(self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose]) -> None:
-        left, right = _left_right(hands)
+        left, right = self._ordered(hands)
         iL, tL, cL, gapL = _pinch(left)
         iR, tR, cR, gapR = _pinch(right)
 
@@ -440,62 +495,137 @@ class VectorOverlayRenderer:
 
     # ---------- screen: 彩色玻璃盒 ----------
 
+    def _box_geometry(
+        self, left: HandPose, right: HandPose
+    ) -> tuple[np.ndarray, np.ndarray, float, float] | None:
+        """双手参数 → 刚体长方体, 返回 (屏幕 8 顶点, 相机系 8 顶点, 焦距, 盒长).
+
+        顶点索引 = x*4 + u*2 + w, 与 _BOX_FACES 一致。
+
+        长轴是**真 3D 向量**: 屏幕位移来自两掌心连线, 深度分量来自两手掌宽比
+        (投影尺寸 ∝ 1/距离, 一只手往前伸盒子就指向镜头)。所以盒子能朝任意
+        方向, 端面也能露出来——长轴锁在像平面时端面结构上永不可见。
+        截面两轴 (b̂ 屏幕上 / ĉ 朝观察者) 由长轴正交化得到, 再绕长轴转 ψ:
+            b̂ = b̂₀cosψ + ĉ₀sinψ      ĉ = −b̂₀sinψ + ĉ₀cosψ
+        ψ = 相机俯角 + 用户 roll——两者同轴, 合成一个角, 不需要翻面状态机。
+        顶点 = t·长轴 + u·b̂ + w·ĉ, 再按 f/(f−z) 弱透视投影。
+
+        w 的原点(= 锚点 = 手)就是旋转的不动点, 位置由 depth_bias 决定:
+        默认 0.5 把体心放在手上, 盒子跟着手整体转; 取 0 会把前面钉在手上,
+        翻转就变成"拿前棱当轴甩"、盒子整体堆在手后面(实测手感不对)。
+
+        刚性是构造出来的: 8 个顶点由 4 个标量(长/高/深/ψ)+一个 3D 轴生成,
+        恒为长方体。旧版 8 个角各自独立跟指尖, 实测"本应等长"的两条深度棱
+        中位差 1.56×(p90 2.94×), 楔形在那个架构里无解。
+        """
+        cL, fL, sL, pL, oL = _grip(left)
+        cR, fR, sR, pR, oR = _grip(right)
+        t = self.anchor_lift  # 0=掌心(偏低) 1=指弧中点(原片高度)
+        gL, gR = cL + (fL - cL) * t, cR + (fR - cR) * t
+        span_v = gR - gL
+        span = float(np.linalg.norm(span_v))
+        if span < MIN_SPAN_PX:
+            return None
+
+        # 长轴深度分量: 掌宽比 → 单目深度线索(哪只手更近就更大)
+        dz_raw = BOX_AXIS_Z_GAIN * span * (pR - pL) / max(pR + pL, 1e-3)
+        height_raw = BOX_H_GAIN * (sL + sR) * 0.5
+        psi_raw = BOX_ROLL_BIAS + self.roll_gain * (oL + oR) * 0.5
+        if self._box_ema is None:
+            height, psi, dz = height_raw, psi_raw, dz_raw
+        else:
+            a = BOX_SMOOTH
+            height = self._box_ema[0] * a + height_raw * (1.0 - a)
+            psi = self._box_ema[1] * a + psi_raw * (1.0 - a)
+            dz = self._box_ema[2] * a + dz_raw * (1.0 - a)
+        self._box_ema = (height, psi, dz)
+        self.box_debug = f"psi{np.degrees(psi):+4.0f} oL{oL:+.2f} oR{oR:+.2f} dz{dz:+4.0f}"
+
+        depth = BOX_DEPTH_RATIO * height
+        axis = np.array([span_v[0], span_v[1], dz], np.float32)  # (屏幕x, 屏幕y, 朝观察者)
+        length = float(np.linalg.norm(axis))
+        axis_hat = axis / length
+        # 截面正交基: ĉ₀ 朝观察者, b̂₀ 屏幕"上"(屏幕 y 轴朝下故取负)
+        c0 = -np.cross(axis_hat, np.array([0.0, -1.0, 0.0], np.float32))
+        n0 = float(np.linalg.norm(c0))
+        if n0 < 1e-3:  # 长轴近乎竖直, 换个参考方向避免叉积退化
+            c0 = -np.cross(axis_hat, np.array([1.0, 0.0, 0.0], np.float32))
+            n0 = float(np.linalg.norm(c0))
+        c0 = c0 / n0
+        b0 = np.cross(axis_hat, c0)
+        cos_p, sin_p = float(np.cos(psi)), float(np.sin(psi))
+        b_hat = b0 * cos_p + c0 * sin_p
+        c_hat = -b0 * sin_p + c0 * cos_p
+
+        # f 至少 1.1×(高+深) → f−z 恒为正, 双手贴近时不会被透视除爆
+        focal = BOX_FOCAL * max(length, height + depth)
+        anchor = (gL + gR) * 0.5
+
+        cam = np.empty((8, 3), np.float32)
+        scr = np.empty((8, 2), np.float32)
+        # w 的原点 = 锚点 = 绕长轴旋转的不动点。depth_bias=0.5 时体心落在手上,
+        # 盒子跟着手整体转; =0 时前面压在手上, 翻转会变成"前棱当轴甩"。
+        w_front = depth * self.depth_bias
+        for xi, t in enumerate((-0.5, 0.5)):
+            for ui, u in enumerate((-0.5 * height, 0.5 * height)):
+                for wi, w in enumerate((w_front, w_front - depth)):
+                    p3 = axis * t + b_hat * u + c_hat * w
+                    k = xi * 4 + ui * 2 + wi
+                    # 相机系右手基: x 右, y 上(屏幕 y 取负), z 朝观察者
+                    cam[k] = (p3[0], -p3[1], p3[2])
+                    scr[k] = anchor + p3[:2] * (focal / (focal - p3[2]))
+        return scr, cam, focal, length
+
     def _draw_box(
         self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose], seed: int
     ) -> None:
-        left, right = _left_right(hands)
-        ftL, fbL, btL, bbL = _end_frame(left)
-        ftR, fbR, btR, bbR = _end_frame(right)
-
-        span = float(np.linalg.norm(ftR - ftL))
-        if span < MIN_SPAN_PX:
-            # 五指汇聚 + 双手合拢 → 白色种子点(盒子出现/收起的中间态)
-            c = (ftL + fbL + ftR + fbR) * 0.25
+        left, right = self._ordered(hands)
+        geo = self._box_geometry(left, right)
+        if geo is None:
+            # 双手合拢 → 白色种子点(盒子出现/收起的中间态)
+            t = self.anchor_lift
+            c = sum(g[0] + (g[1] - g[0]) * t for g in (_grip(left), _grip(right))) * 0.5
             ci = (int(round(float(c[0]))), int(round(float(c[1]))))
             cv2.circle(canvas, ci, 5, EDGE, -1, cv2.LINE_AA)
             cv2.circle(canvas, ci, 2, WHITE_HOT, -1, cv2.LINE_AA)
             return
+        scr, cam, focal, length = geo
 
-        top = np.array([btL, btR, ftR, ftL], np.float32)
-        front = np.array([ftL, ftR, fbR, fbL], np.float32)
-        bottom = np.array([fbL, fbR, bbR, bbL], np.float32)
-        end_l = np.array([ftL, btL, bbL, fbL], np.float32)
-        end_r = np.array([btR, ftR, fbR, bbR], np.float32)
+        # 面可见性 = 外法线朝向相机(凸体, 物理正确; 不再用 2D 绕序启发式)。
+        # 外法线用"面心 − 体心"定向, 免去手工排 CCW 的符号坑。
+        eye = np.array([0.0, 0.0, focal], np.float32)
+        center = cam.mean(axis=0)
+        vis: list[tuple[float, int, tuple[int, int, int, int], np.ndarray]] = []
+        for fi, (idx, lut) in enumerate(_BOX_FACES):
+            q = cam[list(idx)]
+            n = np.cross(q[1] - q[0], q[2] - q[0])
+            face_c = q.mean(axis=0)
+            if float(n @ (face_c - center)) < 0.0:
+                n = -n
+            if float(n @ (eye - face_c)) > 0.0:
+                vis.append((float(face_c[2]), fi, idx, lut))
+        vis.sort(key=lambda v: v[0])  # toward 小的(远的)先画
 
-        # 底面/端面只在翻到朝镜头时可见(否则被前/顶面盖住): 端面绿, 底面 X-ray
-        for quad, cmap in ((end_l, GREEN_LUT), (end_r, GREEN_LUT), (bottom, XRAY_CMAP)):
-            if _tri_sign(quad[:3]) > 0:
-                _cmap_fill(canvas, frame_bgr, quad, cmap)
+        for _, fi, idx, lut in vis:
+            quad = scr[list(idx)]
+            shift = (0.0, BOX_SAMPLE_K * length) if fi == _BOX_TOP_FACE else (0.0, 0.0)
+            _cmap_fill(canvas, frame_bgr, quad, lut, shift)
+            if fi == _BOX_TOP_FACE:
+                self._glitch(canvas, frame_bgr, quad, seed)
 
-        # 直纹面: 顶/前面沿对角线劈成两个三角形, 翻到背面的三角形渲染红色背面;
-        # 未折叠(同号)时整面一次填充
-        folds: list[tuple[np.ndarray, np.ndarray]] = []
-        for quad, lut, shift in (
-            (top, BLUE_LUT, (0.0, BOX_SAMPLE_K * span)),
-            (front, GREEN_LUT, (0.0, 0.0)),
-        ):
-            t1 = quad[:3]
-            t2 = np.array([quad[2], quad[3], quad[0]], np.float32)
-            s1, s2 = _tri_sign(t1), _tri_sign(t2)
-            if s1 == s2:
-                _cmap_fill(canvas, frame_bgr, quad, lut if s1 > 0 else RED_LUT, shift)
-            else:
-                _cmap_fill(canvas, frame_bgr, t1, lut if s1 > 0 else RED_LUT, shift)
-                _cmap_fill(canvas, frame_bgr, t2, lut if s2 > 0 else RED_LUT, shift)
-                folds.append((quad[0], quad[2]))  # 四角不共面 → 对角折痕描边
+        # 五指收拢 → 高→0, 所有面退化成零面积: 兜底描一条侧视细线
+        if not vis:
+            _edge_line(canvas, scr[0], scr[4])
+            return
 
-        self._glitch(canvas, frame_bgr, top, seed)
-
-        # 五指连线: 中指/无名指跨手细弦线
-        for tip in (MIDDLE_TIP, RING_TIP):
-            _edge_line(canvas, left.points[tip, :2], right.points[tip, :2], EDGE, 1)
-        # 12 棱线框: 两端矩形 + 四条纵向轨 + 折痕
-        for quad in (end_l, end_r):
-            cv2.polylines(canvas, [np.round(quad).astype(np.int32)], True, EDGE, 3, cv2.LINE_AA)
-        for a, b in ((ftL, ftR), (fbL, fbR), (btL, btR), (bbL, bbR)):
-            _edge_line(canvas, a, b)
-        for a, b in folds:
-            _edge_line(canvas, a, b)
+        # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)
+        drawn: set[tuple[int, int]] = set()
+        for _, _, idx, _lut in vis:
+            for a, b in zip(idx, idx[1:] + idx[:1]):
+                e = (a, b) if a < b else (b, a)
+                if e not in drawn:
+                    drawn.add(e)
+                    _edge_line(canvas, scr[a], scr[b])
 
     def _glitch(self, canvas: np.ndarray, frame_bgr: np.ndarray, top: np.ndarray, seed: int) -> None:
         """蓝顶面横条故障: 水平位移的原色背景条(不染蓝)."""
@@ -520,7 +650,7 @@ class VectorOverlayRenderer:
     # ---------- banner: v2 TouchDesigner 四层横幅 ----------
 
     def _draw_banner(self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose]) -> None:
-        left, right = _left_right(hands)
+        left, right = self._ordered(hands)
         iL, tL, cL, _ = _pinch(left)
         iR, tR, cR, _ = _pinch(right)
         if float(np.linalg.norm(cR - cL)) < MIN_SPAN_PX:

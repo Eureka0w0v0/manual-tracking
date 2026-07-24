@@ -1,10 +1,11 @@
 """Realtime webcam live loop.
 
-Architecture (after review of async negative opts):
-- MediaPipe on a worker thread, but only submit when worker is IDLE
-- Submit a pre-downscaled frame for inference (not full 1280x720 copy)
-- Main thread: camera → draw → imshow; never blocked by detect
-- No discarded full-res memcpy when worker is busy
+Architecture (5 份稳定性审查后的时序设计):
+- MediaPipe on a worker thread; latest-wins 邮箱: 每帧零拷贝提交,
+  worker 醒来只取最新帧(检测率 = 1/max(D, P), 不再被 idle 门量化)
+- 主线程按当前帧墙钟对最近两次检测结果做速度外推——
+  消除"检测率<显示率"造成的角点阶跃/顿挫(乱飘主因)
+- Main thread: camera → extrapolate → draw → imshow; never blocked
 """
 
 from __future__ import annotations
@@ -18,7 +19,11 @@ import numpy as np
 
 from .pipeline import default_model_path
 from .renderer import STYLES, VectorOverlayRenderer
-from .tracker import FrameHands, HandTracker
+from .tracker import FrameHands, HandPose, HandTracker
+
+EXTRAP_CAP_MS = 80.0  # 外推最多补偿这么多毫秒的检测延迟
+EXTRAP_DAMP = 0.7  # 外推阻尼(压过冲)
+EXTRAP_MAX_PX = 40.0  # 单点外推位移上限(翻转等乱抖速度下防甩飞)
 
 
 def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
@@ -37,10 +42,6 @@ def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
                     cap.set(cv2.CAP_PROP_FPS, 30)
-                    try:
-                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    except Exception:
-                        pass
                     return cap
             time.sleep(0.15)
         last_err = f"backend={backend}"
@@ -56,9 +57,9 @@ def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
 class _AsyncHandDetector:
     """
     Worker holds HandTracker.
-    submit() only accepted when idle — no discarded copies.
-    Main passes a full-res frame ownership transfer ONLY when idle;
-    worker resizes inside process_bgr (main never INTER_AREA).
+    latest-wins 邮箱: submit 永远接受并覆盖旧待处理帧(零拷贝——每次迭代的
+    frame 都是新分配数组, 下游只读), worker 醒来只处理最新一帧。
+    保留最近两次结果(带时间戳)供主线程做速度外推。
     """
 
     def __init__(self, tracker: HandTracker) -> None:
@@ -68,36 +69,28 @@ class _AsyncHandDetector:
         self._pending: np.ndarray | None = None
         self._pending_meta: tuple[int, int] | None = None  # idx, ts
         self._busy = False
-        self._hands = FrameHands(index=-1, hands=[])
+        self._res_last: tuple[FrameHands, int] | None = None  # (hands, ts_ms)
+        self._res_prev: tuple[FrameHands, int] | None = None
         self._detect_ms = 0.0
         self._running = True
         self._thread = threading.Thread(target=self._loop, name="hand-detect", daemon=True)
         self._thread.start()
 
-    def idle(self) -> bool:
+    def busy(self) -> bool:
         with self._lock:
-            return (not self._busy) and self._pending is None
+            return self._busy or self._pending is not None
 
-    def submit(
-        self,
-        frame_bgr: np.ndarray,
-        frame_index: int,
-        timestamp_ms: int,
-    ) -> bool:
-        """Return False if worker busy (caller should skip copy)."""
+    def submit(self, frame_bgr: np.ndarray, frame_index: int, timestamp_ms: int) -> None:
         with self._cond:
-            if self._busy or self._pending is not None:
-                return False
-            # frame ownership transfers; caller must not reuse this array
-            self._pending = frame_bgr
+            self._pending = frame_bgr  # latest wins; 旧待处理帧直接被替换
             self._pending_meta = (frame_index, timestamp_ms)
-            self._busy = True
             self._cond.notify()
-            return True
 
-    def latest(self) -> tuple[FrameHands, float]:
+    def latest_pair(
+        self,
+    ) -> tuple[tuple[FrameHands, int] | None, tuple[FrameHands, int] | None, float]:
         with self._lock:
-            return self._hands, self._detect_ms
+            return self._res_prev, self._res_last, self._detect_ms
 
     def close(self) -> None:
         with self._cond:
@@ -116,6 +109,7 @@ class _AsyncHandDetector:
                 meta = self._pending_meta
                 self._pending = None
                 self._pending_meta = None
+                self._busy = True
             if frame is None or meta is None:
                 with self._lock:
                     self._busy = False
@@ -130,9 +124,47 @@ class _AsyncHandDetector:
                 hands = FrameHands(index=fi, hands=[])
             dt = (time.perf_counter() - t0) * 1000.0
             with self._lock:
-                self._hands = hands
+                self._res_prev = self._res_last
+                self._res_last = (hands, ts)
                 self._detect_ms = dt
                 self._busy = False
+
+
+def _extrapolate(
+    prev: tuple[FrameHands, int] | None,
+    last: tuple[FrameHands, int] | None,
+    now_ms: int,
+) -> FrameHands:
+    """按 track_id 配对最近两次检测, 把 landmark 速度外推到当前显示时刻.
+
+    消除检测率(15-30Hz)低于显示率(30fps)时的零阶保持阶跃——乱飘主因。
+    任何配不上的情况原样返回最新结果, 永不比不外推更差。
+    """
+    if last is None:
+        return FrameHands(index=-1, hands=[])
+    fh1, t1 = last
+    if prev is None:
+        return fh1
+    fh0, t0 = prev
+    dt = float(t1 - t0)
+    lead = min(float(now_ms - t1), EXTRAP_CAP_MS) * EXTRAP_DAMP
+    if dt <= 1.0 or lead <= 0.0:
+        return fh1
+    by_id = {h.track_id: h for h in fh0.hands if h.track_id >= 0}
+    out: list[HandPose] = []
+    for h1 in fh1.hands:
+        h0 = by_id.get(h1.track_id)
+        if h0 is None:
+            out.append(h1)
+            continue
+        disp = (h1.points[:, :2] - h0.points[:, :2]) * (lead / dt)
+        m = float(np.max(np.linalg.norm(disp, axis=1)))
+        if m > EXTRAP_MAX_PX:  # 翻转等乱抖速度下限幅, 防外推甩飞
+            disp *= EXTRAP_MAX_PX / m
+        pts = h1.points.copy()
+        pts[:, :2] += disp
+        out.append(HandPose(h1.handedness, h1.score, pts, h1.track_id))
+    return FrameHands(index=fh1.index, hands=out)
 
 
 def run_live(
@@ -146,7 +178,7 @@ def run_live(
     mirror: bool = True,
     width: int = 1280,
     height: int = 720,
-    infer_size: int = 480,
+    infer_size: int = 0,
     record: str | Path | None = None,
     window_name: str = "Manual Tracking Live  |  Q退出 S风格 D暗底 R录制",
 ) -> None:
@@ -174,8 +206,10 @@ def run_live(
     print("=" * 56)
     print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / TD横幅")
     print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
-    print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_size}")
+    infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
+    print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_txt}")
     print("  Q退出 | S风格 | D暗底 | R录制")
+    print("  screen 调参: [ ] 翻转灵敏度  ; ' 挂多高(掌心↔指弧)  , . 旋转轴(前面↔体心)")
     print("=" * 56)
 
     frame_index = 0
@@ -192,7 +226,7 @@ def run_live(
         num_hands=2,
         infer_max_side=infer_size,
         min_detection_confidence=0.45,
-        min_presence_confidence=0.45,
+        min_presence_confidence=0.35,  # 实测: 更快的手部重入, 无副作用
         min_tracking_confidence=0.45,
     )
     detector = _AsyncHandDetector(tracker)
@@ -204,6 +238,12 @@ def run_live(
                 print("摄像头读帧失败，退出")
                 break
 
+            # 取时贴近真实捕获时刻(外推的 dt 必须是真时间)
+            timestamp_ms = int((time.perf_counter() - t0) * 1000)
+            if timestamp_ms <= last_ts:
+                timestamp_ms = last_ts + 1
+            last_ts = timestamp_ms
+
             if mirror:
                 frame = cv2.flip(frame, 1)
 
@@ -212,17 +252,10 @@ def run_live(
                 frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
                 fh, fw = frame.shape[:2]
 
-            timestamp_ms = int((time.perf_counter() - t0) * 1000)
-            if timestamp_ms <= last_ts:
-                timestamp_ms = last_ts + 1
-            last_ts = timestamp_ms
-
-            # Only when worker idle: one full-res ownership copy for detect.
-            # Never copy when busy (no discarded memcpy). Worker resizes.
-            if detector.idle():
-                detector.submit(frame.copy(), frame_index, timestamp_ms)
-
-            hands, detect_ms = detector.latest()
+            # latest-wins 提交(零拷贝: frame 此后只读), 结果按显示时刻外推
+            detector.submit(frame, frame_index, timestamp_ms)
+            prev_res, last_res, detect_ms = detector.latest_pair()
+            hands = _extrapolate(prev_res, last_res, timestamp_ms)
 
             t_draw0 = time.perf_counter()
             out = renderer.render(frame, hands)
@@ -239,13 +272,19 @@ def run_live(
                 writer.write(out)
 
             n_hands = len(hands.hands)
-            busy = "busy" if not detector.idle() else "idle"
+            busy = "busy" if detector.busy() else "idle"
             hud = (
                 f"FPS {fps_ema:5.1f}  det {detect_ms:5.1f}ms  "
                 f"draw {draw_ms_ema:4.1f}ms  hands:{n_hands}  "
                 f"{styles[style_idx]}  {busy}"
                 f"{'  REC' if recording else ''}"
             )
+            if renderer.style == "screen" and renderer.box_debug:
+                # 调 roll 时看这个: psi 是盒子绕长轴的角, oL/oR 是双手掌朝向
+                hud += (
+                    f"  roll {renderer.roll_gain:.1f}  lift {renderer.anchor_lift:.2f}"
+                    f"  bias {renderer.depth_bias:.2f}  {renderer.box_debug}"
+                )
             cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
             cv2.putText(
                 out,
@@ -277,6 +316,21 @@ def run_live(
                 renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
             if key in (ord("-"), ord("_")):
                 renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
+            if key in (ord("["), ord("]")):  # screen: 实时调翻转灵敏度
+                renderer.roll_gain = float(
+                    np.clip(renderer.roll_gain + (0.25 if key == ord("]") else -0.25), 0.0, 6.0)
+                )
+                print(f"roll_gain → {renderer.roll_gain:.2f}")
+            if key in (ord(";"), ord("'")):  # screen: 实时调盒子挂多高(掌心↔指弧)
+                renderer.anchor_lift = float(
+                    np.clip(renderer.anchor_lift + (0.05 if key == ord("'") else -0.05), 0.0, 1.4)
+                )
+                print(f"anchor_lift → {renderer.anchor_lift:.2f}")
+            if key in (ord(","), ord(".")):  # screen: 旋转不动点 前面(0)↔体心(0.5)↔后面(1)
+                renderer.depth_bias = float(
+                    np.clip(renderer.depth_bias + (0.05 if key == ord(".") else -0.05), 0.0, 1.0)
+                )
+                print(f"depth_bias → {renderer.depth_bias:.2f}")
             if key in (ord("r"), ord("R")):
                 if not recording:
                     if record_path is None:

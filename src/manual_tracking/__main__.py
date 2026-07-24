@@ -49,15 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument("--no-source", action="store_true", help="Black bg, hide camera image")
     live.add_argument("--source-dim", type=float, default=0.55, help="Camera dim 0-1")
-    live.add_argument("--smooth", type=float, default=0.45, help="Landmark smooth 0-0.95")
+    live.add_argument(
+        "--smooth", type=float, default=0.45, help="时域滤波开关: 0=关闭, >0=One Euro"
+    )
     live.add_argument("--no-mirror", action="store_true", help="Disable mirror")
     live.add_argument("--width", type=int, default=1280, help="Capture width (default 1280)")
     live.add_argument("--height", type=int, default=720, help="Capture height (default 720)")
     live.add_argument(
         "--infer-size",
         type=int,
-        default=480,
-        help="Max side for MediaPipe inference (default 480, lower=faster)",
+        default=0,
+        help="MediaPipe 推理最长边; 0=全帧(实测 Apple Silicon 上最快且误差最小)",
     )
     live.add_argument("--record", default=None, help="Optional output path to start recording")
 
