@@ -4,7 +4,7 @@
 - 手用持久 slot 跟踪(track_id), 帧间按手腕距离做 2x2 最优指派——
   handedness 标签翻转/输出顺序变化不再互换两只手的滤波历史
 - One Euro 替代固定 EMA: 静止残噪不劣化, 快速运动滞后 23.5→9px(角点级)
-- 短暂丢检测保留 slot ~0.3s(TTL), 不再单帧清史导致恢复帧裸输出瞬移
+- 短暂丢检测保留 slot 250ms(TTL, 按墙钟计), 不再单帧清史导致恢复帧裸输出瞬移
 - 只滤 xy; z 保留当帧原始观测(AE 导出数据不被跨参考系混合污染)
 """
 
@@ -24,7 +24,9 @@ from mediapipe.tasks.python import vision
 OE_MIN_CUTOFF = 1.0  # Hz, 主调静止残噪(嫌抖降 0.6, 嫌拖影升 1.5)
 OE_BETA = 0.04  # 速度增益, 主调运动滞后(甜点区 0.03-0.05)
 OE_D_CUTOFF = 1.0  # Hz, 速度估计低通
-SLOT_TTL = 6  # 检测 tick; 手短暂丢失时滤波历史保留时长(~0.3s)
+# 手短暂丢失时滤波历史保留多久。按**墙钟**而非检测 tick 计: 检测率 = 1/max(D,P),
+# 30Hz 时 6 tick 是 200ms, 机器负载高掉到 10Hz 就变成 600ms —— 同一个常数漂 3 倍。
+SLOT_TTL_MS = 250.0
 MATCH_PALM_SCALE = 1.5  # 配对门限 = 该值 × 掌宽(|MCP5-MCP17|)
 MATCH_MIN_PX = 80.0  # 掌宽异常小时的门限下限
 
@@ -52,14 +54,13 @@ class FrameHands:
 class _Slot:
     """一条手部轨迹: track_id + One Euro 滤波状态 + 寿命."""
 
-    __slots__ = ("sid", "x", "dx", "t_ms", "age")
+    __slots__ = ("sid", "x", "dx", "t_ms")
 
     def __init__(self, sid: int, pts: np.ndarray, ts_ms: float) -> None:
         self.sid = sid
         self.x = pts.copy()
         self.dx = np.zeros((21, 2), np.float32)
-        self.t_ms = float(ts_ms)
-        self.age = 0
+        self.t_ms = float(ts_ms)  # 最后一次匹配上的时刻; TTL 由它算, 不用 tick 计数
 
     def filt(self, pts: np.ndarray, ts_ms: float) -> np.ndarray:
         """One Euro: 截止频率随速度自适应; 只滤 xy, z 直通."""
@@ -122,10 +123,9 @@ class HandTracker:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def _age_slots(self) -> None:
-        for s in self._slots:
-            s.age += 1
-        self._slots = [s for s in self._slots if s.age <= SLOT_TTL]
+    def _expire(self, ts_ms: float) -> None:
+        """丢掉超过 TTL 没再匹配上的轨迹(墙钟计时, 与检测率无关)."""
+        self._slots = [s for s in self._slots if ts_ms - s.t_ms <= SLOT_TTL_MS]
 
     def _track(self, pts_list: list[np.ndarray], ts_ms: float) -> list[tuple[np.ndarray, int]]:
         """配对 + 滤波: 返回 [(filtered_pts, track_id)], 与输入同序.
@@ -169,14 +169,11 @@ class HandTracker:
         keep_slots: list[_Slot] = []
         for k, j in pairs:
             s = old[j]
-            s.age = 0
-            out[k] = (s.filt(pts_list[k], ts_ms), s.sid)
+            out[k] = (s.filt(pts_list[k], ts_ms), s.sid)  # filt 会把 t_ms 推到当前
             keep_slots.append(s)
         for j, s in enumerate(old):
-            if j not in matched:
-                s.age += 1
-                if s.age <= SLOT_TTL:
-                    keep_slots.append(s)
+            if j not in matched and ts_ms - s.t_ms <= SLOT_TTL_MS:
+                keep_slots.append(s)
         for k in range(len(pts_list)):
             if out[k] is None:
                 s = _Slot(self._next_id, pts_list[k], ts_ms)
@@ -210,7 +207,7 @@ class HandTracker:
 
         hands: list[HandPose] = []
         if not result.hand_landmarks:
-            self._age_slots()  # 短暂丢检测不清史, TTL 内恢复仍有平滑
+            self._expire(float(timestamp_ms))  # 短暂丢检测不清史, TTL 内恢复仍有平滑
             return FrameHands(index=frame_index, hands=hands)
 
         inv = 1.0 / scale if scale > 0 else 1.0

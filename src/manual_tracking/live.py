@@ -105,9 +105,14 @@ def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
 class _AsyncHandDetector:
     """
     Worker holds HandTracker.
-    latest-wins 邮箱: submit 永远接受并覆盖旧待处理帧(零拷贝——每次迭代的
-    frame 都是新分配数组, 下游只读), worker 醒来只处理最新一帧。
-    保留最近两次结果(带时间戳)供主线程做速度外推。
+    latest-wins 邮箱: submit 永远接受并覆盖旧待处理帧, worker 醒来只处理最新
+    一帧。保留最近两次结果(带时间戳)供主线程做速度外推。
+
+    为什么不拷贝也安全: `cap.read()` 的缓冲区在**没人持有引用时会被复用**
+    (实测: 持有引用则 8 次返回 8 个不同地址, 不持有则全部复用同一地址)。
+    这里 `_pending` 和 worker 的局部 `frame` 接力持有引用, refcount 全程 ≥1,
+    所以那块内存不会被下一次 read 覆盖。下游确实只读: renderer 三条路径都
+    新建输出画布, HUD 画在副本上(实测 358 帧提交前后校验和 0 次改写)。
     """
 
     def __init__(self, tracker: HandTracker) -> None:
@@ -120,6 +125,7 @@ class _AsyncHandDetector:
         self._res_last: tuple[FrameHands, int] | None = None  # (hands, ts_ms)
         self._res_prev: tuple[FrameHands, int] | None = None
         self._detect_ms = 0.0
+        self._errors = 0  # 检测异常累计(HUD 显示; 静默失败会伪装成"没检测到手")
         self._running = True
         self._thread = threading.Thread(target=self._loop, name="hand-detect", daemon=True)
         self._thread.start()
@@ -139,6 +145,10 @@ class _AsyncHandDetector:
     ) -> tuple[tuple[FrameHands, int] | None, tuple[FrameHands, int] | None, float]:
         with self._lock:
             return self._res_prev, self._res_last, self._detect_ms
+
+    def errors(self) -> int:
+        with self._lock:
+            return self._errors
 
     def close(self) -> bool:
         """停 worker 并等它退出; 返回是否干净退出.
@@ -174,17 +184,25 @@ class _AsyncHandDetector:
 
             fi, ts = meta
             t0 = time.perf_counter()
+            err: str | None = None
             try:
                 # tracker.infer_max_side handles downscale + maps coords to full-res
                 hands = self._tracker.process_bgr(frame, fi, ts)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - worker 不能死, 但要留下痕迹
                 hands = FrameHands(index=fi, hands=[])
+                # 静默吞掉的话, 检测持续炸只表现为 HUD 一直 hands:0, 分不清
+                # "真没手"和"检测挂了"。首次打印 + 计数, HUD 上显示 errN。
+                err = f"{type(exc).__name__}: {exc}"
             dt = (time.perf_counter() - t0) * 1000.0
             with self._lock:
                 self._res_prev = self._res_last
                 self._res_last = (hands, ts)
                 self._detect_ms = dt
                 self._busy = False
+                if err is not None:
+                    if self._errors == 0:
+                        print(f"检测异常(后续同类只计数): {err}")
+                    self._errors += 1
 
 
 def _extrapolate(
@@ -358,10 +376,12 @@ def run_live(
 
             n_hands = len(hands.hands)
             busy = "busy" if detector.busy() else "idle"
+            n_err = detector.errors()
             hud = (
                 f"FPS {fps_ema:5.1f}  det {detect_ms:5.1f}ms  "
                 f"draw {draw_ms_ema:4.1f}ms  hands:{n_hands}  "
                 f"{styles[style_idx]}  {busy}"
+                f"{f'  ERR{n_err}' if n_err else ''}"
                 f"{'  REC' if recording else ''}"
             )
             if renderer.style == "screen" and renderer.box_debug:
