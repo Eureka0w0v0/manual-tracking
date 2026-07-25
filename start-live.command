@@ -14,10 +14,15 @@ echo "  把手伸到镜头前 — 特效会贴在你自己手上"
 echo "  Q 退出 | S 换风格 | D 暗底 | R 录制"
 echo "=========================================="
 
-# 触发一次摄像头权限请求（若尚未授权）
+# 触发一次摄像头权限请求（若尚未授权）。用自动挑出的内置摄像头索引——
+# 写死 0 的话，接了 iPhone 连续互通时可能探到手机上去、把手机叫醒接管。
 .venv/bin/python - <<'PY' || true
-import cv2, time
-cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+import sys, time
+sys.path.insert(0, "src")
+import cv2
+from manual_tracking.live import _builtin_camera_index
+
+cap = cv2.VideoCapture(_builtin_camera_index(), cv2.CAP_AVFOUNDATION)
 for _ in range(30):
     if cap.isOpened():
         ok, f = cap.read()
@@ -30,4 +35,4 @@ else:
 cap.release()
 PY
 
-exec .venv/bin/python -m manual_tracking live --camera 0 --style mirror
+exec .venv/bin/python -m manual_tracking live --style mirror

@@ -23,6 +23,7 @@ from .pipeline import default_model_path
 from .renderer import STYLES, VectorOverlayRenderer
 from .tracker import FrameHands, HandPose, HandTracker
 
+FPS_WARMUP_FRAMES = 5  # 前 N 帧不计入 fps_ema(冷启动: 首帧 read/首次推理远慢于稳态)
 EXTRAP_CAP_MS = 80.0  # 外推最多补偿这么多毫秒的检测延迟
 EXTRAP_DAMP = 0.7  # 外推阻尼(压过冲)
 EXTRAP_MAX_PX = 40.0  # 单点外推位移上限(翻转等乱抖速度下防甩飞)
@@ -50,6 +51,27 @@ def _builtin_camera_index() -> int:
         if not any(k in blob for k in ("iphone", "ipad", "continuity", "desk view")):
             return i
     return 0
+
+
+def _refps(path: Path, fps: float) -> bool:
+    """按真实平均帧率重封装录像(不重编码)。没有 ffmpeg 就返回 False."""
+    import shutil
+
+    if shutil.which("ffmpeg") is None or not path.exists():
+        return False
+    tmp = path.with_suffix(".refps.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-r", f"{fps:.4f}", "-i", str(path), "-c", "copy", str(tmp)],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        tmp.replace(path)
+        return True
+    except (subprocess.SubprocessError, OSError):
+        tmp.unlink(missing_ok=True)
+        return False
 
 
 def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
@@ -118,11 +140,20 @@ class _AsyncHandDetector:
         with self._lock:
             return self._res_prev, self._res_last, self._detect_ms
 
-    def close(self) -> None:
+    def close(self) -> bool:
+        """停 worker 并等它退出; 返回是否干净退出.
+
+        调用方**必须**检查返回值: worker 卡住时 native landmarker 可能正在
+        detect 里, 此时销毁它是未定义行为(实测 mediapipe 0.10.35 下没崩,
+        但没有任何保证)。正常路径检测中位 6.9ms/p95 9.4ms, 离 3s 有数百倍余量。
+        """
         with self._cond:
             self._running = False
+            self._pending = None  # 丢掉待处理帧, 别让 worker 退出前又跑一次完整检测
+            self._pending_meta = None
             self._cond.notify()
-        self._thread.join(timeout=2.0)
+        self._thread.join(timeout=3.0)
+        return not self._thread.is_alive()
 
     def _loop(self) -> None:
         while True:
@@ -224,7 +255,22 @@ def run_live(
     styles = list(STYLES)
     style_idx = styles.index(renderer.style)
 
-    cap = _open_camera(camera, width, height)
+    # 先建 tracker 再开摄像头/开窗: 模型损坏之类的失败在这里抛, 此时还没有任何
+    # 资源需要回收(否则摄像头会被占着直到进程退出)。
+    tracker = HandTracker(
+        model,
+        smooth=smooth,
+        num_hands=2,
+        infer_max_side=infer_size,
+        min_detection_confidence=0.45,
+        min_presence_confidence=0.35,  # 实测: 更快的手部重入, 无副作用
+        min_tracking_confidence=0.45,
+    )
+    try:
+        cap = _open_camera(camera, width, height)
+    except Exception:
+        tracker.close()
+        raise
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height)
 
@@ -239,6 +285,9 @@ def run_live(
     writer: cv2.VideoWriter | None = None
     recording = False
     record_path: Path | None = Path(record) if record else None
+    rec_frames = 0
+    rec_t0 = 0.0
+    fps_rec = 30.0
 
     print("=" * 56)
     print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / TD横幅")
@@ -251,23 +300,17 @@ def run_live(
     print("=" * 56)
 
     frame_index = 0
-    t0 = time.perf_counter()
     fps_ema = 0.0
-    last_t = t0
     draw_ms_ema = 0.0
     last_ts = -1
 
-    # Worker tracker downscales internally (main only copies when idle)
-    tracker = HandTracker(
-        model,
-        smooth=smooth,
-        num_hands=2,
-        infer_max_side=infer_size,
-        min_detection_confidence=0.45,
-        min_presence_confidence=0.35,  # 实测: 更快的手部重入, 无副作用
-        min_tracking_confidence=0.45,
-    )
     detector = _AsyncHandDetector(tracker)
+
+    # 计时基准必须在模型加载(实测 133ms)之后取, 否则第一帧的瞬时 FPS 只有 ~6,
+    # 而它会直接播种 fps_ema(α=0.15 要 ~30 帧才收敛)。启动 1 秒内按 R 录制,
+    # fps_rec 就会冻结在这个坏值上 —— 实测第 1 帧按 R 得到 10fps, 成片慢放 67%。
+    t0 = time.perf_counter()
+    last_t = t0
 
     try:
         while True:
@@ -303,11 +346,15 @@ def run_live(
             now = time.perf_counter()
             inst = 1.0 / max(now - last_t, 1e-4)
             last_t = now
-            fps_ema = inst if fps_ema <= 1e-3 else fps_ema * 0.85 + inst * 0.15
+            # 跳过冷启动帧: 首帧 cap.read()/首次推理都远慢于稳态, 拿它播种 EMA 会
+            # 让 fps_ema 花 ~1 秒才爬到真值, 期间按 R 会把坏值冻进录制帧率。
+            if frame_index >= FPS_WARMUP_FRAMES:
+                fps_ema = inst if fps_ema <= 1e-3 else fps_ema * 0.85 + inst * 0.15
 
             # 录制在画 HUD 之前，成片不带黑条和状态文字
             if recording and writer is not None:
                 writer.write(out)
+                rec_frames += 1
 
             n_hands = len(hands.hands)
             busy = "busy" if detector.busy() else "idle"
@@ -388,30 +435,58 @@ def run_live(
                         record_path = out_dir / f"live_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
                     hh, ww = out.shape[:2]
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    # 用实测 FPS 录制，避免快放/慢放（无实测值时退回 30）
-                    fps_rec = float(np.clip(fps_ema, 10.0, 60.0)) if fps_ema > 1e-3 else 30.0
+                    # 用实测 FPS 录制，避免快放/慢放（EMA 还没热身好就退回 30）
+                    warm = frame_index >= FPS_WARMUP_FRAMES + 10
+                    fps_rec = float(np.clip(fps_ema, 10.0, 60.0)) if warm else 30.0
                     writer = cv2.VideoWriter(str(record_path), fourcc, fps_rec, (ww, hh))
                     if not writer.isOpened():
                         print("无法开始录制")
                         writer = None
                     else:
                         recording = True
-                        print(f"REC start → {record_path}")
+                        rec_frames = 0
+                        rec_t0 = time.perf_counter()
+                        print(f"REC start → {record_path}  ({fps_rec:.1f} fps)")
                 else:
                     recording = False
                     if writer is not None:
                         writer.release()
                         writer = None
-                    print(f"REC stop → {record_path}")
+                        # 容器帧率在开录时就写死了, 但真实平均帧率只有录完才知道
+                        # (低光下摄像头会自动降到 15fps → 成片快放 2x)。实测偏差
+                        # 超过 5% 就用 ffmpeg 按真实帧率重封装, 没有 ffmpeg 则只提示。
+                        real = rec_frames / max(time.perf_counter() - rec_t0, 1e-6)
+                        if record_path and abs(real - fps_rec) / fps_rec > 0.05:
+                            fixed = _refps(record_path, real)
+                            print(
+                                f"REC 帧率修正 {fps_rec:.1f} → {real:.1f} fps"
+                                f"{'' if fixed else ' (需要 ffmpeg, 已跳过)'}"
+                            )
+                    print(f"REC stop → {record_path}  ({rec_frames} 帧)")
                     record_path = None
 
             frame_index += 1
     finally:
-        detector.close()
-        tracker.close()
-        if writer is not None:
-            writer.release()
-        cap.release()
-        cv2.destroyAllWindows()
+        # 释放顺序按"用户可感知的损失"排: 录像文件和摄像头最先, 因为 MediaPipe
+        # graph 关闭万一抛异常, 后面的语句就都不执行了 —— 那会留下一个没写
+        # moov box 的坏 mp4(实测 未 release 1.31MB 打不开 / release 后 1.56MB 正常)。
+        # 每个 release 各自 try, 一个失败不拖累其余。
+        for label, fn in (
+            ("writer", (lambda: writer.release()) if writer is not None else None),
+            ("camera", cap.release),
+            ("window", cv2.destroyAllWindows),
+        ):
+            if fn is None:
+                continue
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001 - 清理阶段, 记录后继续
+                print(f"释放 {label} 失败: {exc!r}")
         for _ in range(5):
             cv2.waitKey(1)
+        # worker 卡住时不销毁 native landmarker(否则是未定义行为), 宁可泄漏
+        # 一个句柄 —— 进程随后就退出了, OS 会回收。
+        if detector.close():
+            tracker.close()
+        else:
+            print("警告: 检测线程未在 3s 内退出, 跳过 landmarker 销毁")

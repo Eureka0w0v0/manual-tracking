@@ -14,7 +14,7 @@ screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
     _orient(掌面前缩) → 绕长轴 roll。进深取盒高的固定比例。
   相机俯角与用户 roll 同轴(都绕长轴), 合成单一角 ψ, 无翻面状态机。
   弱透视 f/(f−toward) 给出真实两点透视(后棱自动短于前棱)。
-  面可见性 = 3D 外法线朝向相机(物理正确), 可见面按远近排序绘制。
+  面可见性 = 3D 外法线朝向相机(物理正确)。
   每面不同特效: 顶面蓝反相 LUT+横条 glitch / 前面·端面绿 LUT /
   底面 X-ray / 背面红 LUT。只描可见面的棱(背面的棱被实体挡住)。
   五指收拢 → 盒高→0 塌成扁带; 双手合拢 → 白色种子点。
@@ -404,7 +404,7 @@ class VectorOverlayRenderer:
         show_source: bool = True,
         source_dim: float = 0.65,
     ) -> None:
-        self.style = canon_style(style)
+        self._style = canon_style(style)
         self.show_source = show_source
         self.source_dim = float(source_dim)
         self._box_ema: tuple[float, float, float] | None = None  # (盒高, ψ, 长轴深度分量)
@@ -415,7 +415,28 @@ class VectorOverlayRenderer:
         self.roll_resp = BOX_ROLL_RESP  # 实时可调(live 的 9 0 键): 旋转跟手程度
         self.roll_max_rate = BOX_ROLL_MAX_RATE  # 实时可调(live 的 7 8 键): 角速度上限
         self._psi_rate = 0.0  # ψ 的角速度估计(rad/帧), 驱动自适应滤波
+        self._b0_prev: np.ndarray | None = None  # 上帧的截面"上"轴(符号帧间传播)
         self.box_debug = ""  # live HUD 用: 当前 ψ / 双手掌朝向 / 长轴深度
+
+    @property
+    def style(self) -> str:
+        return self._style
+
+    @style.setter
+    def style(self, name: str) -> None:
+        """切风格顺带清状态: 换走再换回来时不该拿几秒前的 ψ 继续插值."""
+        new = canon_style(name)
+        if new != self._style:
+            self._style = new
+            self._reset_state()
+
+    def _reset_state(self) -> None:
+        """清掉全部跨帧状态(手离场/合拢/切风格). 下一帧当作冷启动."""
+        self._box_ema = None
+        self._psi_rate = 0.0
+        self._b0_prev = None
+        self._role_ids = None
+        self.box_debug = ""
 
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
         if self.show_source:
@@ -435,6 +456,11 @@ class VectorOverlayRenderer:
                 self._draw_box(out, frame_bgr, hands, frame_hands.index)
             elif self.style == "banner":
                 self._draw_banner(out, frame_bgr, hands)
+        else:
+            # 手不足两只 → 清跨帧状态。_box_geometry 里那份只覆盖"双手合拢"
+            # (它要 len(hands)>=2 才被调到), 手移出画面走的是这条路: 实测离场
+            # 3 秒回来时 _box_ema/_psi_rate 原封不动, 盒子要边转边追 18 帧(0.6s)。
+            self._reset_state()
 
         for i, h in enumerate(hands):
             self._skeleton(out, h, i)
@@ -558,34 +584,38 @@ class VectorOverlayRenderer:
         span_v = gR - gL
         span = float(np.linalg.norm(span_v))
         if span < MIN_SPAN_PX:
-            # 手离开/合拢: 清掉滤波历史。否则手移出画面几秒再回来, ψ 会从旧值
-            # 继续插值, 且 _psi_rate 还留着上次的大角速度 → 恢复的头几帧 k 贴在
+            # 双手合拢: 清掉滤波历史。否则再张开时 ψ 从旧值继续插值, 且
+            # _psi_rate 还留着上次的大角速度 → 恢复的头几帧 k 贴在
             # BOX_ROLL_RESP_MAX 上, 滤波形同虚设。
-            self._box_ema = None
-            self._psi_rate = 0.0
+            self._reset_state()
             return None
 
-        # 长轴深度分量: 掌宽比 → 单目深度线索(哪只手更近就更大)
-        dz_raw = BOX_AXIS_Z_GAIN * span * (pR - pL) / max(pR + pL, 1e-3)
+        # 长轴深度分量: 掌宽比 → 单目深度线索(哪只手更近就更大)。
+        # 存 EMA 的是**比值**不是像素: 比值是无量纲的, 而像素随 span 变——快速
+        # 收手时旧的大 dz 会被带进来, 实测 span 900→60 时 dz/span 从 1.08 冲到
+        # 4.03(长轴偏出像平面 76°), 突破了 BOX_AXIS_Z_GAIN 这个上界。
+        dzr_raw = BOX_AXIS_Z_GAIN * (pR - pL) / max(pR + pL, 1e-3)
         height_raw = BOX_H_GAIN * (sL + sR) * 0.5
         o = (oL + oR) * 0.5
         psi_raw = BOX_ROLL_BIAS + (np.pi * np.sign(o) - BOX_ROLL_BIAS) * abs(o) ** self.roll_expo
         if self._box_ema is None:
-            height, psi, dz = height_raw, psi_raw, dz_raw
+            height, psi, dzr = height_raw, psi_raw, dzr_raw
         else:
             a = BOX_SMOOTH
             height = self._box_ema[0] * a + height_raw * (1.0 - a)
-            dz = self._box_ema[2] * a + dz_raw * (1.0 - a)
+            dzr = self._box_ema[2] * a + dzr_raw * (1.0 - a)
             # ψ: 转得越快滤波越松 → 静止不抖, 快速翻手仍然跟手
             prev = self._box_ema[1]
-            self._psi_rate = self._psi_rate * BOX_RATE_SMOOTH + abs(psi_raw - prev) * (
-                1.0 - BOX_RATE_SMOOTH
-            )
+            # 走最短弧: ψ 是角度, ±π 是同一姿态。线性插值会绕远路——实测原片
+            # 186 个帧里有 3 帧 |ψ_raw − prev| > 180°(最大 216.9°, 最短弧只要
+            # 143.1°), 叠加限幅后要多花 ~4 帧才转到位。
+            err = float(np.arctan2(np.sin(psi_raw - prev), np.cos(psi_raw - prev)))
+            self._psi_rate = self._psi_rate * BOX_RATE_SMOOTH + abs(err) * (1.0 - BOX_RATE_SMOOTH)
             k = min(self.roll_resp + BOX_ROLL_RESP_GAIN * self._psi_rate, BOX_ROLL_RESP_MAX)
-            step = (psi_raw - prev) * k
             cap = np.radians(self.roll_max_rate)  # 硬限幅: 挡掉 _orient 掀翻符号造成的弹飞
-            psi = prev + float(np.clip(step, -cap, cap))
-        self._box_ema = (height, psi, dz)
+            psi = prev + float(np.clip(err * k, -cap, cap))
+        self._box_ema = (height, psi, dzr)
+        dz = dzr * span  # 比值 → 当帧像素
         self.box_debug = f"psi{np.degrees(psi):+5.0f} oL{oL:+.2f} oR{oR:+.2f} dz{dz:+4.0f}"
 
         depth = BOX_DEPTH_RATIO * height
@@ -604,9 +634,18 @@ class VectorOverlayRenderer:
             c0 = c0 - axis_hat * float(axis_hat @ c0)
             n0 = max(float(np.linalg.norm(c0)), 1e-6)
         c0 = c0 / n0
-        b0 = np.cross(c0, axis_hat)  # 右手系 (axiŝ, b̂₀, ĉ₀); 屏幕 y 朝下故这是"上"
-        if b0[1] > 0:  # 长轴指向左半屏时叉积会朝下, 统一到屏幕"上"
+        # b̂₀ = ±(ĉ₀ × âxis), 符号得挑一个。按"屏幕上"挑(b0[1]<0)会在 b0[1]=0 处
+        # 180° 翻转 —— 解析上该条件等价于 span_v.x=0(长轴竖直), 而 ROLE_HYST_PX
+        # 守的是**掌心** x 差, 与 lift 后的锚点 x 差实测相隔 559px(p95), 根本护不住:
+        # 锚点 dx 过零实测单帧 608px 跳变、3.8% 画面像素变化。
+        # 改为帧间传播(与上帧同向者胜): 长轴扫过竖直时连续穿过, 不存在翻转点。
+        b0 = np.cross(c0, axis_hat)
+        if self._b0_prev is not None:
+            if float(b0 @ self._b0_prev) < 0.0:
+                b0 = -b0
+        elif b0[1] > 0:  # 冷启动才用"屏幕上"定初值
             b0 = -b0
+        self._b0_prev = b0.copy()
         cos_p, sin_p = float(np.cos(psi)), float(np.sin(psi))
         b_hat = b0 * cos_p + c0 * sin_p
         c_hat = -b0 * sin_p + c0 * cos_p
@@ -658,10 +697,17 @@ class VectorOverlayRenderer:
                 n = -n
             if float(n @ (eye - face_c)) > 0.0:
                 vis.append((float(face_c[2]), fi, idx, lut))
-        vis.sort(key=lambda v: v[0])  # toward 小的(远的)先画
+        # 凸体 + 背面剔除 ⇒ 可见面在投影上恰好铺满剪影一次, 互不重叠(实测原片
+        # 187 帧两两交集面积恒为 0)。所以这里排序纯粹是让绘制顺序确定, 与遮挡
+        # 无关——去掉它只会让共享棱的抗锯齿舍入差 1 个灰阶。
+        vis.sort(key=lambda v: v[0])
         # HUD 用: 当前哪些面朝着镜头。调 roll 时靠它区分"几何没转到"和
         # "画了但读不出来"(红背 LUT 在暗底上是全场最暗的一块, 很容易漏看)
         self.box_debug += "  " + ("+".join(_BOX_FACE_TAGS[v[1]] for v in vis) or "-")
+
+        if not vis:  # 盒高恰好为 0: 所有面零面积, 兜底描一条侧视细线
+            _edge_line(canvas, scr[0], scr[4])
+            return
 
         for _, fi, idx, lut in vis:
             quad = scr[list(idx)]
@@ -669,11 +715,6 @@ class VectorOverlayRenderer:
             _cmap_fill(canvas, frame_bgr, quad, lut, shift)
             if fi == _BOX_TOP_FACE:
                 self._glitch(canvas, frame_bgr, quad, seed)
-
-        # 五指收拢 → 高→0, 所有面退化成零面积: 兜底描一条侧视细线
-        if not vis:
-            _edge_line(canvas, scr[0], scr[4])
-            return
 
         # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)
         drawn: set[tuple[int, int]] = set()
