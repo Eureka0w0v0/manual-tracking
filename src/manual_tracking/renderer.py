@@ -15,8 +15,9 @@ screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
   相机俯角与用户 roll 同轴(都绕长轴), 合成单一角 ψ, 无翻面状态机。
   弱透视 f/(f−toward) 给出真实两点透视(后棱自动短于前棱)。
   面可见性 = 3D 外法线朝向相机(物理正确)。
-  每面不同特效: 顶面蓝反相 LUT+横条 glitch / 前面·端面绿 LUT /
-  底面 X-ray / 背面红 LUT。只描可见面的棱(背面的棱被实体挡住)。
+  六个面六种像素处理(见 _BOX_FACES): 顶=蓝反相+横条 glitch / 前=绿+色阶断层 /
+  背=红+横向色差 / 底=X-ray+扫描线 / 左端=浮雕线稿 / 右端=半调网点。
+  只描可见面的棱(背面的棱被实体挡住)。
   五指收拢 → 盒高→0 塌成扁带; 双手合拢 → 白色种子点。
 
 banner — TouchDesigner 横幅(v2):
@@ -135,6 +136,17 @@ BOX_RATE_SMOOTH = 0.5  # 角速度估计自身的 EMA(不平滑的话增益会�
 # 所以超过这个速率的一律是误检。20°/帧 @30fps = 600°/s, 比最快的翻腕还快
 # 一倍有余, 不会削掉真实动作。限幅作用在滤波之后, 直接约束"看到的"角速度。
 BOX_ROLL_MAX_RATE = 20.0
+# ---- 每面特效的参数(六个面各一套, 见 _BOX_FACES) ----
+POSTER_LEVELS = 6  # 前面色阶断层的级数(2=极简剪影, 6=版画感, ≥24 基本等于连续)
+RED_SPLIT_PX = 3  # 背面横向色差: R 右移/B 左移的像素数(原片实测 R 相对 B +3px)
+SCAN_PERIOD = 4  # 底面全息扫描线周期(行)
+SCAN_DEPTH = 0.35  # 扫描线压暗深度 0-1
+EMBOSS_BASE = 210.0  # 端面浮雕的中性底(差分为 0 处的亮度)
+EMBOSS_GAIN = 1.1  # 浮雕对角差分增益(越大线条越硬)
+EMBOSS_TINT = (1.00, 0.94, 0.88)  # 浮雕的冷白染色 BGR 乘子
+HALFTONE_CELL = 6  # 端面网点的格子边长(px); 越小点越密
+HALFTONE_PAPER = (228, 240, 244)  # 网点底色(暖白纸) BGR
+HALFTONE_INK = (43, 23, 23)  # 网点墨色 BGR
 # 蓝顶面横条 glitch(实测 h15-40 w50-400 @1080p, 按 720p 采集缩放到 2/3)
 GLITCH_STRIPS = 3
 GLITCH_H = (10, 27)
@@ -306,16 +318,134 @@ WHITE_CMAP = _duotone_cmap(BANNER_W_DARK, BANNER_WHITE, BANNER_THRESH, soft=45)
 RED_CMAP = _duotone_cmap(BANNER_R_DARK, BANNER_RED, BANNER_THRESH)
 XRAY_CMAP = _xray_cmap()
 
+# ---- 每面的像素处理(effect): src_bgr → out_bgr, 同尺寸 ----
+# 原片实测结论(逐像素, 帧 264/288):
+#   · 面内是真正的 gradient map, 不是平涂——绿前面 BGR 三通道都跑满 0~255,
+#     亮度 std 34; 蓝顶面 B 148~255 / G 23~155 / R 27~122
+#   · 红背面有横向色差: R 相对 B 位移 +3px(r=0.683), 白描边上肉眼可见冷暖边
+#   · **没有扫描线**: 去趋势后行方向频谱无主导频率, 2 行调制深度只有 0.07 灰阶
+#     (肉眼看到的"横条"是 h.264 压缩块, 不是特效)
+# 端面/底面在原片里几乎没露过, 属于自由创作区; 取用户自己那套 hand-frame-glitch
+# 的风格语汇(浮雕线稿 / 半调网点 / 全息扫描线)。
+
+
+def _fx_lut(lut: np.ndarray, split: int = 0):
+    """gradient map; split>0 时附加横向色差(R 右移、B 左移)."""
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        out = cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), lut)
+        if split:
+            out[..., 2] = np.roll(out[..., 2], split, axis=1)
+            out[..., 0] = np.roll(out[..., 0], -split, axis=1)
+        return out
+
+    return fn
+
+
+def _fx_poster(lut: np.ndarray, levels: int):
+    """gradient map + 色阶断层: 先把灰度量化成 levels 级再查表 → 版画式硬边。
+
+    量化在**查表前**做, 所以断层落在 LUT 的采样点上, 每一级都是 LUT 上的一个
+    确定颜色, 不会出现插值出来的中间色。
+    """
+    step = 256.0 / max(levels, 2)
+    q = (np.clip((np.arange(256) / step).astype(np.int32), 0, levels - 1) * step + step * 0.5).astype(
+        np.uint8
+    )
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        g = cv2.LUT(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), q)
+        return cv2.applyColorMap(g, lut)
+
+    return fn
+
+
+def _fx_scan(lut: np.ndarray, period: int, depth: float):
+    """gradient map + 全息扫描线: 每 period 行压暗 depth.
+
+    只对 1/period 的行做原地缩放(切片是视图), 不是整幅乘一个列向量——后者
+    要分配一个全画幅 float 中间量, 实测慢 4 倍。
+    """
+    keep = 1.0 - depth
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        out = cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), lut)
+        rows = out[::period]
+        cv2.convertScaleAbs(rows, dst=rows, alpha=keep)
+        return out
+
+    return fn
+
+
+_EMBOSS_K = np.array([[-1, 0, 0], [0, 0, 0], [0, 0, 1]], np.float32)
+
+
+def _fx_emboss(base: float, gain: float, tint: tuple[float, float, float]):
+    """浮雕线稿: 对角差分 + 常数底 → 白色浅浮雕(端面读作"截面").
+
+    差分值域是 [-255,255], 所以整条 base+gain*d 曲线预算成 511 项查表; 染色
+    再用一张 256 项 colormap。两次查表代替两个全画幅 float 乘法(实测 13.2→1.3ms)。
+    """
+    ramp = np.clip(base + np.arange(-255, 256, dtype=np.float32) * gain, 0, 255).astype(np.uint8)
+    tint_lut = np.clip(
+        np.arange(256, dtype=np.float32)[:, None] * np.array(tint, np.float32), 0, 255
+    ).astype(np.uint8)[:, None, :]
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        d = cv2.filter2D(g, cv2.CV_16S, _EMBOSS_K)
+        return cv2.applyColorMap(ramp[d + 255], tint_lut)
+
+    return fn
+
+
+def _halftone_thresh(cell: int) -> np.ndarray:
+    """一个 cell 的阈值瓦片: 到中心距离² 归一化. 越靠边阈值越低 → 点从中心长大."""
+    c = (cell - 1) * 0.5
+    y, x = np.mgrid[0:cell, 0:cell].astype(np.float32)
+    r = np.hypot(y - c, x - c) / max(c, 1e-6)
+    return np.clip(1.0 - r * r, 0.0, 1.0)
+
+
+def _fx_halftone(cell: int, paper: tuple[int, int, int], ink: tuple[int, int, int]):
+    """半调网点: 亮度低于"到中心距离"阈值的像素上墨 → 点随暗部长大.
+
+    平铺阈值图**按需增长后长期复用**, 每帧只做一次切片(视图, 免费)+ 一次
+    uint8 比较 + 一次调色板索引。原先每帧重新 np.tile 要 16.6ms, 现在 1.5ms。
+    """
+    tile = (_halftone_thresh(cell) * 255.0).astype(np.uint8)
+    duo = np.empty((256, 1, 3), np.uint8)
+    duo[:128] = np.array(paper, np.uint8)  # 掩码 0 = 亮 = 纸
+    duo[128:] = np.array(ink, np.uint8)  # 掩码 255 = 暗 = 墨
+    cache: dict[str, np.ndarray] = {}
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        h, w = src.shape[:2]
+        big = cache.get("t")
+        if big is None or big.shape[0] < h or big.shape[1] < w:
+            reps = (max(h, big.shape[0] if big is not None else 0) // cell + 1,
+                    max(w, big.shape[1] if big is not None else 0) // cell + 1)
+            big = np.tile(tile, reps)
+            cache["t"] = big
+        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        # compare → 0/255 掩码, 再走 applyColorMap 的双色表; 全程 OpenCV, 不做
+        # numpy 花式索引(那一步实测占 10ms 里的 8ms)
+        return cv2.applyColorMap(cv2.compare(g, big[:h, :w], cv2.CMP_LT), duo)
+
+    return fn
+
+
 # 长方体拓扑: 顶点索引 = x*4 + u*2 + w
 #   x: 0=左端 1=右端 / u: 0=下 1=上 / w: 0=前(贴指弧) 1=后(远离镜头)
 # 绕序无所谓——外法线在运行时用"面心 − 体心"定向, 不靠手工排 CCW。
-_BOX_FACES: tuple[tuple[tuple[int, int, int, int], np.ndarray], ...] = (
-    ((0, 4, 6, 2), GREEN_LUT),  # 前面
-    ((1, 5, 7, 3), RED_LUT),  # 背面(翻过去才露)
-    ((0, 4, 5, 1), XRAY_CMAP),  # 底面(翻上来才露)
-    ((2, 6, 7, 3), BLUE_LUT),  # 顶面(带横条 glitch)
-    ((0, 2, 3, 1), GREEN_LUT),  # 左端面
-    ((4, 6, 7, 5), GREEN_LUT),  # 右端面
+# 六个面六种处理, 彼此一眼可分:
+_BOX_FACES: tuple[tuple[tuple[int, int, int, int], object], ...] = (
+    ((0, 4, 6, 2), _fx_poster(GREEN_LUT, POSTER_LEVELS)),  # 前面: 绿 + 色阶断层
+    ((1, 5, 7, 3), _fx_lut(RED_LUT, split=RED_SPLIT_PX)),  # 背面: 红 + 色差(原片实测)
+    ((0, 4, 5, 1), _fx_scan(XRAY_CMAP, SCAN_PERIOD, SCAN_DEPTH)),  # 底面: X光 + 扫描线
+    ((2, 6, 7, 3), _fx_lut(BLUE_LUT)),  # 顶面: 蓝反相(原片实测) + 横条 glitch
+    ((0, 2, 3, 1), _fx_emboss(EMBOSS_BASE, EMBOSS_GAIN, EMBOSS_TINT)),  # 左端: 浮雕线稿
+    ((4, 6, 7, 5), _fx_halftone(HALFTONE_CELL, HALFTONE_PAPER, HALFTONE_INK)),  # 右端: 网点
 )
 _BOX_TOP_FACE = 3  # 顶面在 _BOX_FACES 里的下标(采样偏移 + glitch 只给它)
 _BOX_FACE_TAGS = ("前", "背", "底", "顶", "左", "右")  # HUD 显示当前可见面用
@@ -373,6 +503,21 @@ def _cmap_fill(
     roi, src, mask, _ = got
     gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
     cv2.copyTo(cv2.applyColorMap(gray, cmap), mask, roi)
+
+
+def _fx_fill(
+    canvas: np.ndarray,
+    frame_bgr: np.ndarray,
+    poly: np.ndarray,
+    fx: object,
+    shift: tuple[float, float] = (0.0, 0.0),
+) -> None:
+    """按面的 effect 函数填充: face = fx(背景窗口(uv+shift))."""
+    got = _poly_window(canvas, frame_bgr, poly, shift)
+    if got is None:
+        return
+    roi, src, mask, _ = got
+    cv2.copyTo(np.ascontiguousarray(fx(src)), mask, roi)  # type: ignore[operator]
 
 
 def _mirror_fill(
@@ -688,15 +833,15 @@ class VectorOverlayRenderer:
         # 外法线用"面心 − 体心"定向, 免去手工排 CCW 的符号坑。
         eye = np.array([0.0, 0.0, focal], np.float32)
         center = cam.mean(axis=0)
-        vis: list[tuple[float, int, tuple[int, int, int, int], np.ndarray]] = []
-        for fi, (idx, lut) in enumerate(_BOX_FACES):
+        vis: list[tuple[float, int, tuple[int, int, int, int], object]] = []
+        for fi, (idx, fx) in enumerate(_BOX_FACES):
             q = cam[list(idx)]
             n = np.cross(q[1] - q[0], q[2] - q[0])
             face_c = q.mean(axis=0)
             if float(n @ (face_c - center)) < 0.0:
                 n = -n
             if float(n @ (eye - face_c)) > 0.0:
-                vis.append((float(face_c[2]), fi, idx, lut))
+                vis.append((float(face_c[2]), fi, idx, fx))
         # 凸体 + 背面剔除 ⇒ 可见面在投影上恰好铺满剪影一次, 互不重叠(实测原片
         # 187 帧两两交集面积恒为 0)。所以这里排序纯粹是让绘制顺序确定, 与遮挡
         # 无关——去掉它只会让共享棱的抗锯齿舍入差 1 个灰阶。
@@ -709,16 +854,16 @@ class VectorOverlayRenderer:
             _edge_line(canvas, scr[0], scr[4])
             return
 
-        for _, fi, idx, lut in vis:
+        for _, fi, idx, fx in vis:
             quad = scr[list(idx)]
             shift = (0.0, BOX_SAMPLE_K * length) if fi == _BOX_TOP_FACE else (0.0, 0.0)
-            _cmap_fill(canvas, frame_bgr, quad, lut, shift)
+            _fx_fill(canvas, frame_bgr, quad, fx, shift)
             if fi == _BOX_TOP_FACE:
                 self._glitch(canvas, frame_bgr, quad, seed)
 
         # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)
         drawn: set[tuple[int, int]] = set()
-        for _, _, idx, _lut in vis:
+        for _, _, idx, _fx in vis:
             for a, b in zip(idx, idx[1:] + idx[:1]):
                 e = (a, b) if a < b else (b, a)
                 if e not in drawn:
