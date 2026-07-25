@@ -282,7 +282,7 @@ def run_live(
             if renderer.style == "screen" and renderer.box_debug:
                 # psi = 盒子绕长轴的角, oL/oR = 双手掌面朝向(驱动 roll 的原始信号)
                 hud += (
-                    f"  roll {renderer.roll_gain:.1f}  lift {renderer.anchor_lift:.2f}"
+                    f"  expo {renderer.roll_expo:.1f}  lift {renderer.anchor_lift:.2f}"
                     f"  bias {renderer.depth_bias:.2f}  resp {renderer.roll_resp:.2f}"
                     f"  {renderer.box_debug}"
                 )
@@ -317,11 +317,11 @@ def run_live(
                 renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
             if key in (ord("-"), ord("_")):
                 renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
-            if key in (ord("["), ord("]")):  # screen: 翻转倍率(1.0=1:1, 负值反向)
-                renderer.roll_gain = float(
-                    np.clip(renderer.roll_gain + (0.25 if key == ord("]") else -0.25), -6.0, 6.0)
+            if key in (ord("["), ord("]")):  # screen: 翻转曲线陡度(小=灵敏, 大=中心钝但稳)
+                renderer.roll_expo = float(
+                    np.clip(renderer.roll_expo + (0.1 if key == ord("]") else -0.1), 0.6, 3.0)
                 )
-                print(f"roll_gain → {renderer.roll_gain:.2f}")
+                print(f"roll_expo → {renderer.roll_expo:.2f}")
             if key in (ord(";"), ord("'")):  # screen: 实时调盒子挂多高(掌心↔指弧)
                 renderer.anchor_lift = float(
                     np.clip(renderer.anchor_lift + (0.05 if key == ord("'") else -0.05), 0.0, 1.4)

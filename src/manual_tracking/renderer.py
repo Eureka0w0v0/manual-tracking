@@ -104,11 +104,16 @@ BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1
 BOX_H_GAIN = 1.14  # 盒真高 / 指弧展开量(食指尖→小指尖); 反解 313/274
 BOX_DEPTH_RATIO = 1.47  # 进深 / 盒真高; 反解 461/313
 BOX_ROLL_BIAS = 0.830  # 静止时的截面转角 rad(=相机俯角, 47.6°); 保证看得见蓝顶面
-# 掌面朝向 → 绕长轴 roll 的弧度增益。实测背红面需要 |ψ| ≥ 110°, 而静止角
-# 是 BOX_ROLL_BIAS=48°, 所以正方向要 +62°、负方向要 −158° 才翻得到背面。
-# gain 2.0 时 ψ ∈ [−67°, +162°]: 负方向差 43° 永远够不到, 正方向也要求
-# _orient 打到 0.545 以上。3.0 让 ψ ∈ [−124°, +220°], 两个方向都能翻到背面。
-BOX_ROLL_GAIN = 3.0
+# 掌面朝向 o → 绕长轴 roll。**不是线性 gain**, 而是两端收敛到 ±180°:
+#     ψ = BIAS + (π·sign(o) − BIAS) · |o|^EXPO
+# 为什么不用线性 gain: 背红面的投影面积对 ψ 是单峰的(峰在 180°, 那里红面
+# 满屏), 线性映射只能在直线上挑落点, 顾此失彼——实测 gain 2.0 正端 ψ=162°
+# 红面积 89.6%, 提到 3.0 后正端跑到 219° 越过峰值, 红面积反而掉到 56.4%,
+# 同时可见面切换从 3.37 次/秒涨到 5.29 次/秒(颜色频闪)。
+# expo 把两端直接钉在峰值 ±180° 上, 且 o=0 时恰好回到 BIAS(静止外观逐像素
+# 不变)。dψ/do = (π − sign(o)·BIAS)·EXPO·|o|^(EXPO−1) > 0 恒成立 → 严格单调。
+# EXPO 越大中心越钝、静止越稳(1.0 线性 / 1.5 平衡 / 2.0 最稳)。
+BOX_ROLL_EXPO = 1.5
 BOX_AXIS_Z_GAIN = 1.2  # 掌宽比 → 长轴深度分量; 一只手往前伸盒子就指向镜头(0 = 长轴锁在像平面)
 BOX_ANCHOR_LIFT = 0.85  # 锚点在 掌心(0)↔指弧中点(1) 之间的位置; 帧 312 反解最优 0.95
 BOX_DEPTH_BIAS = 0.5  # 锚点在进深方向的位置, 同时也是绕长轴旋转的不动点:
@@ -273,14 +278,21 @@ GREEN_LUT = _build_lut(
         (255, (224, 255, 255)),
     ]
 )
+# 背面红。原片逐像素实测值是一条很窄的暗红带(灰60→亮度52.7, 灰160→82.0,
+# 全域跨度仅 60), 实测**比 source_dim=0.65 压过的背景还暗**(灰160 处背景 104
+# vs 红面 82) —— 翻过去了也读不出来, 用户反馈的"看不到后面"有一半是这个。
+# 下面这组保持红相(红度 @灰110 从 54 提到 169)但把动态范围拉到 174, 每一档
+# 都亮过背景。原片测量值保留在上面的注释里, 要还原保真度就换回去。
 RED_LUT = _build_lut(
     [
-        (48, (44, 39, 66)),
-        (80, (48, 40, 89)),
-        (112, (52, 44, 102)),
-        (144, (57, 46, 123)),
-        (176, (58, 49, 161)),
-        (255, (70, 60, 200)),
+        (16, (24, 20, 58)),
+        (48, (32, 26, 112)),
+        (80, (38, 30, 168)),
+        (112, (46, 36, 212)),
+        (144, (58, 46, 238)),
+        (176, (84, 68, 250)),
+        (216, (134, 116, 254)),
+        (255, (190, 180, 255)),
     ]
 )
 YELLOW_CMAP = _duotone_cmap(BANNER_Y_DARK, BANNER_YELLOW, BANNER_THRESH)
@@ -391,7 +403,7 @@ class VectorOverlayRenderer:
         self.source_dim = float(source_dim)
         self._box_ema: tuple[float, float, float] | None = None  # (盒高, ψ, 长轴深度分量)
         self._role_ids: tuple[int, int] | None = None  # (左手 sid, 右手 sid)
-        self.roll_gain = BOX_ROLL_GAIN  # 实时可调(live 的 [ ] 键)
+        self.roll_expo = BOX_ROLL_EXPO  # 实时可调(live 的 [ ] 键): 翻转曲线陡度
         self.anchor_lift = BOX_ANCHOR_LIFT  # 实时可调(live 的 ; ' 键): 盒子挂多高
         self.depth_bias = BOX_DEPTH_BIAS  # 实时可调(live 的 , . 键): 旋转不动点/进深中心
         self.roll_resp = BOX_ROLL_RESP  # 实时可调(live 的 9 0 键): 旋转跟手程度
@@ -539,12 +551,18 @@ class VectorOverlayRenderer:
         span_v = gR - gL
         span = float(np.linalg.norm(span_v))
         if span < MIN_SPAN_PX:
+            # 手离开/合拢: 清掉滤波历史。否则手移出画面几秒再回来, ψ 会从旧值
+            # 继续插值, 且 _psi_rate 还留着上次的大角速度 → 恢复的头几帧 k 贴在
+            # BOX_ROLL_RESP_MAX 上, 滤波形同虚设。
+            self._box_ema = None
+            self._psi_rate = 0.0
             return None
 
         # 长轴深度分量: 掌宽比 → 单目深度线索(哪只手更近就更大)
         dz_raw = BOX_AXIS_Z_GAIN * span * (pR - pL) / max(pR + pL, 1e-3)
         height_raw = BOX_H_GAIN * (sL + sR) * 0.5
-        psi_raw = BOX_ROLL_BIAS + self.roll_gain * (oL + oR) * 0.5
+        o = (oL + oR) * 0.5
+        psi_raw = BOX_ROLL_BIAS + (np.pi * np.sign(o) - BOX_ROLL_BIAS) * abs(o) ** self.roll_expo
         if self._box_ema is None:
             height, psi, dz = height_raw, psi_raw, dz_raw
         else:
@@ -565,14 +583,21 @@ class VectorOverlayRenderer:
         axis = np.array([span_v[0], span_v[1], dz], np.float32)  # (屏幕x, 屏幕y, 朝观察者)
         length = float(np.linalg.norm(axis))
         axis_hat = axis / length
-        # 截面正交基: ĉ₀ 朝观察者, b̂₀ 屏幕"上"(屏幕 y 轴朝下故取负)
-        c0 = -np.cross(axis_hat, np.array([0.0, -1.0, 0.0], np.float32))
+        # 截面正交基: ĉ₀ 朝观察者(+z), b̂₀ 屏幕"上"。
+        # ĉ₀ 必须**恒定朝向观察者**——早先版本用 −axiŝ×(0,−1,0), 其 z 分量正比于
+        # span_v.x, 于是双手 x 差过零时整组基翻号、盒子瞬间里外翻(可见面变成互补
+        # 集)。而 ROLE_HYST_PX=25 的角色滞回恰好让 dx∈(−25,0) 成为可达状态, 不是
+        # 理论边角。改为把 +ẑ 对长轴做 Gram-Schmidt 正交化: z 分量恒 ≥0, 无符号翻转。
+        c0 = np.array([0.0, 0.0, 1.0], np.float32) - axis_hat * float(axis_hat[2])
         n0 = float(np.linalg.norm(c0))
-        if n0 < 1e-3:  # 长轴近乎竖直, 换个参考方向避免叉积退化
-            c0 = -np.cross(axis_hat, np.array([1.0, 0.0, 0.0], np.float32))
-            n0 = float(np.linalg.norm(c0))
+        if n0 < 1e-3:  # 长轴几乎正对镜头, +ẑ 退化 → 换屏幕"上"当参考
+            c0 = np.array([0.0, -1.0, 0.0], np.float32)
+            c0 = c0 - axis_hat * float(axis_hat @ c0)
+            n0 = max(float(np.linalg.norm(c0)), 1e-6)
         c0 = c0 / n0
-        b0 = np.cross(axis_hat, c0)
+        b0 = np.cross(c0, axis_hat)  # 右手系 (axiŝ, b̂₀, ĉ₀); 屏幕 y 朝下故这是"上"
+        if b0[1] > 0:  # 长轴指向左半屏时叉积会朝下, 统一到屏幕"上"
+            b0 = -b0
         cos_p, sin_p = float(np.cos(psi)), float(np.sin(psi))
         b_hat = b0 * cos_p + c0 * sin_p
         c_hat = -b0 * sin_p + c0 * cos_p
