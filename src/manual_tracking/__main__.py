@@ -39,7 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     dump.add_argument("--model", default=None)
 
     live = sub.add_parser("live", help="Realtime webcam: YOU get the effect")
-    live.add_argument("--camera", type=int, default=0, help="Camera index (default 0)")
+    live.add_argument(
+        "--camera",
+        type=int,
+        default=-1,
+        help="摄像头索引; -1=自动挑本机内置(绕开 iPhone 连续互通)",
+    )
     live.add_argument("--model", default=None, help="Path to hand_landmarker.task")
     live.add_argument(
         "--style",
@@ -53,8 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--smooth", type=float, default=0.45, help="时域滤波开关: 0=关闭, >0=One Euro"
     )
     live.add_argument("--no-mirror", action="store_true", help="Disable mirror")
-    live.add_argument("--width", type=int, default=1280, help="Capture width (default 1280)")
-    live.add_argument("--height", type=int, default=720, help="Capture height (default 720)")
+    live.add_argument("--width", type=int, default=1920, help="采集宽 (默认 1920)")
+    live.add_argument("--height", type=int, default=1080, help="采集高 (默认 1080)")
+    live.add_argument(
+        "--window-scale",
+        type=float,
+        default=1.0,
+        help="窗口初始尺寸相对采集分辨率的倍率(窗口本身可拖拽缩放)",
+    )
     live.add_argument(
         "--infer-size",
         type=int,
@@ -101,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             width=args.width,
             height=args.height,
             infer_size=args.infer_size,
+            window_scale=args.window_scale,
             record=args.record,
         )
         return 0

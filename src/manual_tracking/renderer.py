@@ -129,6 +129,12 @@ BOX_ROLL_RESP = 0.40  # 静止时每帧吸收的新值比例(= 旧固定 EMA 的
 BOX_ROLL_RESP_GAIN = 1.35  # 每 (rad/帧) 角速度把上面这个值抬高多少
 BOX_ROLL_RESP_MAX = 0.92  # 上限, 留一点滤波防单帧误检直接甩过去
 BOX_RATE_SMOOTH = 0.5  # 角速度估计自身的 EMA(不平滑的话增益会跟着抖)
+# ψ 的角速度硬限幅(度/检测帧)。_orient 在饱和区会被噪声掀翻符号——实测原片
+# 里出现过"一只手 o 从 −1.00 一帧跳到 +0.74 而另一只手没动", 两手平均后 ψ
+# 单帧弹 199.5°(p99 117.6°, >90° 的帧占 1.6%)。手物理上不可能 33ms 转 180°,
+# 所以超过这个速率的一律是误检。20°/帧 @30fps = 600°/s, 比最快的翻腕还快
+# 一倍有余, 不会削掉真实动作。限幅作用在滤波之后, 直接约束"看到的"角速度。
+BOX_ROLL_MAX_RATE = 20.0
 # 蓝顶面横条 glitch(实测 h15-40 w50-400 @1080p, 按 720p 采集缩放到 2/3)
 GLITCH_STRIPS = 3
 GLITCH_H = (10, 27)
@@ -407,6 +413,7 @@ class VectorOverlayRenderer:
         self.anchor_lift = BOX_ANCHOR_LIFT  # 实时可调(live 的 ; ' 键): 盒子挂多高
         self.depth_bias = BOX_DEPTH_BIAS  # 实时可调(live 的 , . 键): 旋转不动点/进深中心
         self.roll_resp = BOX_ROLL_RESP  # 实时可调(live 的 9 0 键): 旋转跟手程度
+        self.roll_max_rate = BOX_ROLL_MAX_RATE  # 实时可调(live 的 7 8 键): 角速度上限
         self._psi_rate = 0.0  # ψ 的角速度估计(rad/帧), 驱动自适应滤波
         self.box_debug = ""  # live HUD 用: 当前 ψ / 双手掌朝向 / 长轴深度
 
@@ -575,7 +582,9 @@ class VectorOverlayRenderer:
                 1.0 - BOX_RATE_SMOOTH
             )
             k = min(self.roll_resp + BOX_ROLL_RESP_GAIN * self._psi_rate, BOX_ROLL_RESP_MAX)
-            psi = prev + (psi_raw - prev) * k
+            step = (psi_raw - prev) * k
+            cap = np.radians(self.roll_max_rate)  # 硬限幅: 挡掉 _orient 掀翻符号造成的弹飞
+            psi = prev + float(np.clip(step, -cap, cap))
         self._box_ema = (height, psi, dz)
         self.box_debug = f"psi{np.degrees(psi):+5.0f} oL{oL:+.2f} oR{oR:+.2f} dz{dz:+4.0f}"
 

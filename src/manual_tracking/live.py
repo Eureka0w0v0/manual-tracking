@@ -10,6 +10,8 @@ Architecture (5 份稳定性审查后的时序设计):
 
 from __future__ import annotations
 
+import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -24,6 +26,30 @@ from .tracker import FrameHands, HandPose, HandTracker
 EXTRAP_CAP_MS = 80.0  # 外推最多补偿这么多毫秒的检测延迟
 EXTRAP_DAMP = 0.7  # 外推阻尼(压过冲)
 EXTRAP_MAX_PX = 40.0  # 单点外推位移上限(翻转等乱抖速度下防甩飞)
+
+
+def _builtin_camera_index() -> int:
+    """本机内置摄像头的索引; 认不出来就退回 0.
+
+    macOS 的"连续互通相机"会把 iPhone 也列成一个摄像头设备, 被选中时手机会
+    亮屏接管——不是我们要的。system_profiler 的列举顺序与 AVFoundation(OpenCV
+    用的后端)一致, 所以按顺序找第一个不是 iPhone/iPad 的设备即可。
+    """
+    try:
+        raw = subprocess.run(
+            ["system_profiler", "-json", "SPCameraDataType"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        ).stdout
+        items = json.loads(raw).get("SPCameraDataType", [])
+    except Exception:
+        return 0
+    for i, dev in enumerate(items):
+        blob = " ".join(str(v) for v in dev.values()).lower()
+        if not any(k in blob for k in ("iphone", "ipad", "continuity", "desk view")):
+            return i
+    return 0
 
 
 def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
@@ -169,19 +195,22 @@ def _extrapolate(
 
 def run_live(
     *,
-    camera: int = 0,
+    camera: int = -1,
     model_path: str | Path | None = None,
     style: str = "mirror",
     show_source: bool = True,
     source_dim: float = 0.65,
     smooth: float = 0.35,
     mirror: bool = True,
-    width: int = 1280,
-    height: int = 720,
+    width: int = 1920,
+    height: int = 1080,
     infer_size: int = 0,
+    window_scale: float = 1.0,
     record: str | Path | None = None,
     window_name: str = "Manual Tracking Live  |  Q退出 S风格 D暗底 R录制",
 ) -> None:
+    if camera < 0:  # 自动: 挑本机内置摄像头, 绕开 iPhone 连续互通
+        camera = _builtin_camera_index()
     model = Path(model_path) if model_path else default_model_path()
     if not model.exists():
         raise FileNotFoundError(f"model missing: {model}")
@@ -199,6 +228,14 @@ def run_live(
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height)
 
+    # 可缩放窗口: 默认 AUTOSIZE 会把窗口钉死在采集分辨率上, Retina 屏(3456x2234)
+    # 下一个 1280x720 的窗口很小。WINDOW_NORMAL 允许拖拽边角任意放大, 初始尺寸
+    # 按 window_scale 给。放大只影响显示, 不改采集/检测/录制分辨率。
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    cv2.resizeWindow(
+        window_name, int(actual_w * window_scale), int(actual_h * window_scale)
+    )
+
     writer: cv2.VideoWriter | None = None
     recording = False
     record_path: Path | None = Path(record) if record else None
@@ -208,8 +245,9 @@ def run_live(
     print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
     infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
     print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_txt}")
+    print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
     print("  Q退出 | S风格 | D暗底 | R录制")
-    print("  screen 调参: [ ] 翻转灵敏度  ; ' 挂多高  , . 旋转轴  9 0 旋转跟手程度")
+    print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限  9 0 跟手程度")
     print("=" * 56)
 
     frame_index = 0
@@ -284,7 +322,7 @@ def run_live(
                 hud += (
                     f"  expo {renderer.roll_expo:.1f}  lift {renderer.anchor_lift:.2f}"
                     f"  bias {renderer.depth_bias:.2f}  resp {renderer.roll_resp:.2f}"
-                    f"  {renderer.box_debug}"
+                    f"  cap {renderer.roll_max_rate:.0f}  {renderer.box_debug}"
                 )
             cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
             cv2.putText(
@@ -332,6 +370,11 @@ def run_live(
                     np.clip(renderer.depth_bias + (0.05 if key == ord(".") else -0.05), 0.0, 1.0)
                 )
                 print(f"depth_bias → {renderer.depth_bias:.2f}")
+            if key in (ord("7"), ord("8")):  # screen: 角速度上限(度/帧), 小=更稳但更钝
+                renderer.roll_max_rate = float(
+                    np.clip(renderer.roll_max_rate + (5.0 if key == ord("8") else -5.0), 5.0, 90.0)
+                )
+                print(f"roll_max_rate → {renderer.roll_max_rate:.0f}°/帧")
             if key in (ord("9"), ord("0")):  # screen: 旋转跟手程度(大=跟手, 小=顺滑)
                 renderer.roll_resp = float(
                     np.clip(renderer.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
