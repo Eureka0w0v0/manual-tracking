@@ -432,7 +432,7 @@ def run_live(
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
     print("  Q退出 | S风格 | D暗底 | R录制")
     print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限")
-    print("               9 0 旋转跟手  - = 锚点跟手(去抖)  < > 收起距离  o p 底亮度")
+    print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线粗细  o p 底亮度")
     print("=" * 56)
 
     frame_index = 0
@@ -529,6 +529,11 @@ def run_live(
                     np.clip(renderer.box.anchor_resp + (0.05 if up else -0.05), 0.05, 1.0)
                 )
                 print(f"anchor_resp → {renderer.box.anchor_resp:.2f}")
+            if key in (ord("{"), ord("}")):  # screen: 棱线粗细
+                renderer.box_edge_w = int(
+                    np.clip(renderer.box_edge_w + (1 if key == ord("}") else -1), 1, 8)
+                )
+                print(f"box_edge_w → {renderer.box_edge_w}")
             if key in (ord("<"), ord(">")):  # screen: 双手多近才收起
                 up = key == ord(">")
                 renderer.box.gap_shut = float(

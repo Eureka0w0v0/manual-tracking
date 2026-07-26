@@ -111,6 +111,10 @@ COOL_START = 0.7  # 亮度低于此值开始变冷
 COOL_RATE = 1.8  # 变冷速度
 MIRROR_SHIFT = 0.35  # 折起的面采样点外移量(跨距比例)
 BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1080)
+# 盒子棱线宽度(px)。原片实测是 4px@1080p 的白线, 但那是"纸板盒"的粗描边;
+# 玻璃盒的六个面各有像素处理之后, 粗白线会压过面本身的质感。
+# mirror/banner 仍用 _edge_line 的默认 3px, 不受这个值影响。
+BOX_EDGE_W = 1
 
 
 # ---- 手部几何 ----
@@ -211,7 +215,8 @@ class VectorOverlayRenderer:
         self._style = canon_style(style)
         self.show_source = show_source
         self.source_dim = float(source_dim)
-        self.box = GlassBox()  # screen 的几何求解器(自带跨帧状态与 5 个实时旋钮)
+        self.box = GlassBox()  # screen 的几何求解器(自带跨帧状态与实时旋钮)
+        self.box_edge_w = BOX_EDGE_W  # 盒子棱线宽度(live 的 { } 键)
         self._role_ids: tuple[int, int] | None = None  # (左手 sid, 右手 sid)
 
     @property
@@ -394,7 +399,7 @@ class VectorOverlayRenderer:
         self.box.debug += "  " + ("+".join(v[2].tag for v in vis) or "-")
 
         if not vis:  # 盒高恰好为 0: 所有面零面积, 兜底描一条侧视细线
-            _edge_line(canvas, scr[0], scr[4])
+            _edge_line(canvas, scr[0], scr[4], width=self.box_edge_w)
             return
 
         for _, _fi, face in vis:
@@ -412,7 +417,7 @@ class VectorOverlayRenderer:
                 e = (a, b) if a < b else (b, a)
                 if e not in drawn:
                     drawn.add(e)
-                    _edge_line(canvas, scr[a], scr[b])
+                    _edge_line(canvas, scr[a], scr[b], width=self.box_edge_w)
 
     def _glitch(self, canvas: np.ndarray, frame_bgr: np.ndarray, top: np.ndarray, seed: int) -> None:
         """蓝顶面横条故障: 水平位移的原色背景条(不染蓝)."""
