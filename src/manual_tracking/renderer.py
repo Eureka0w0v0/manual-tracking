@@ -19,7 +19,7 @@ screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
   前=riso 套色版画 / 背=硬阈值双色 / 底=点云全息 / 左端=四叉树马赛克 /
   右端=半调网点。中间四个复刻自 douyin 那段 TouchDesigner 屏录。
   只描可见面的棱(背面的棱被实体挡住)。
-  五指收拢 → 盒高→0 塌成扁带; 双手合拢 → 白色种子点。
+  五指收拢 → 整个盒子收起(什么都不画); 双手合拢 → 白色种子点。
 
 banner — TouchDesigner 横幅(v2):
   四角 = 双手食指尖(上边)+拇指尖(下边)。四层条带: 黄阈值头带 /
@@ -244,6 +244,7 @@ class VectorOverlayRenderer:
     def _reset_state(self) -> None:
         """清掉全部跨帧状态(手离场). 下一帧当作冷启动."""
         self._reset_box()
+        self.box._shut = False  # 手都离场了, 收拢滞回也该归零, 回来时重新判
         self._role_ids = None
 
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
@@ -366,6 +367,11 @@ class VectorOverlayRenderer:
         self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose], seed: int
     ) -> None:
         left, right = self._ordered(hands)
+        if self.box.is_shut(left, right):
+            # 五指收拢 → 整个盒子收起, 什么都不画(连种子点也不画: 那是"双手合拢"
+            # 的语汇, 表示盒子塌成一点; 收拢是"收工", 该干净地消失)
+            self.box.reset()
+            return
         geo = self.box.solve(left, right)
         if geo is None:
             # 双手合拢 → 白色种子点(盒子出现/收起的中间态)

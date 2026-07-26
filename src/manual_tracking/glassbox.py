@@ -77,6 +77,11 @@ BOX_ANCHOR_RESP = 0.25  # 静止时每帧吸收的新锚点比例(越小越稳�
 BOX_ANCHOR_RESP_GAIN = 0.001
 BOX_ANCHOR_RESP_MAX = 0.95  # 上限; 留一点滤波, 单帧误检不会整盒瞬移
 BOX_ANCHOR_RATE_SMOOTH = 0.5  # 锚点速度估计自身的 EMA
+# 五指收拢 → 收起盒子。判据用 **指弧展开量 / 掌宽** 这个比值而不是像素距离,
+# 因为它与手离镜头远近无关(两者同比例缩放)。实测原片: 手张开时中位 1.5,
+# 收拢时掉到 0.34~0.72。两档阈值做滞回, 免得在临界点上逐帧闪现。
+GRIP_SHUT = 0.55  # 比值低于它 → 收起(任一只手收拢就收起)
+GRIP_OPEN = 0.78  # 比值高于它 → 重新展开; 与上面拉开间距才防得住频闪
 
 
 class GlassBox:
@@ -95,6 +100,7 @@ class GlassBox:
         self._b0_prev: np.ndarray | None = None  # 上帧的截面"上"轴(符号帧间传播)
         self._anchor_prev: np.ndarray | None = None  # 上帧滤波后的两个锚点 (2,2)
         self._anchor_rate = 0.0  # 锚点速度估计(px/帧)
+        self._shut = False  # 五指是否已收拢(滞回状态)
 
     def reset(self) -> None:
         """清跨帧状态(手离场/合拢/切风格). 下一帧当作冷启动.
@@ -107,11 +113,29 @@ class GlassBox:
         self._anchor_prev = None
         self._anchor_rate = 0.0
         self.debug = ""
+        # 注意**不清 _shut**: 收拢期间每帧都会调 reset(清滤波历史), 若把滞回
+        # 状态也清掉, 下一帧就按"已展开"的严阈值判, 滞回等于没有 —— 手停在
+        # 临界比值上会逐帧闪现。_shut 只由 is_shut 自己按两档阈值翻转。
 
     def anchor(self, hand: HandPose) -> np.ndarray:
         """一只手的锚点(掌心↔指弧中点插值). 双手合拢画种子点时也要用."""
         c, f, _s, _p, _o = grip(hand)
         return c + (f - c) * self.anchor_lift
+
+    def is_shut(self, left: HandPose, right: HandPose) -> bool:
+        """五指收拢了吗? 收拢就收起盒子(带滞回, 不会在临界点闪).
+
+        取两手中**更收拢的那只**: 单手一握就收起, 是个自然的"收工"手势。
+        比值 = 指弧展开量 / 掌宽, 与手离镜头的远近无关。
+        """
+        _cL, _fL, sL, pL, _oL = grip(left)
+        _cR, _fR, sR, pR, _oR = grip(right)
+        ratio = min(sL / max(pL, 1e-3), sR / max(pR, 1e-3))
+        if self._shut:
+            self._shut = ratio < GRIP_OPEN  # 已收起: 要张够 GRIP_OPEN 才重新展开
+        else:
+            self._shut = ratio < GRIP_SHUT  # 已展开: 收到 GRIP_SHUT 以下才收起
+        return self._shut
 
     def solve(
         self, left: HandPose, right: HandPose
