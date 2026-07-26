@@ -34,6 +34,22 @@ SCAN_DEPTH = 0.35  # 扫描线压暗深度 0-1
 EMBOSS_BASE = 210.0  # 端面浮雕的中性底(差分为 0 处的亮度)
 EMBOSS_GAIN = 1.1  # 浮雕对角差分增益(越大线条越硬)
 EMBOSS_TINT = (1.00, 0.94, 0.88)  # 浮雕的冷白染色 BGR 乘子
+# 硬阈值双色(丝网印): 取自 douyin TouchDesigner 屏录实测
+DUOTONE_DARK = (146, 101, 42)  # 深蓝 BGR(实测占 57%)
+DUOTONE_LIGHT = (240, 232, 222)  # 白 BGR(实测占 43%)
+DUOTONE_THRESH = 128  # 亮度阈值; 实测中间调占比 0% → 硬切
+# 四叉树自适应马赛克
+QUAD_MIN_CELL = 8  # 最小块边长(px), 再小就切不动了
+QUAD_MAX_DEPTH = 6  # 最大递归层数(兜底, 防极端纹理下节点爆炸)
+QUAD_VAR = 90.0  # 亮度方差超过它就继续切; 越小切得越碎
+QUAD_LINE = (30, 30, 30)  # 块描边色 BGR(原片是近黑细线)
+QUAD_WORK_MAX = 480  # 计算分辨率上限(px); 块结构在缩略图上算完放大, 观感不变
+# 点云/全息(单目近似; 原片用深度相机, 这里用局部对比度代替深度)
+PC_CELL = 3  # 点阵周期(px); 调出亮点密度 14.7%, 对齐原片实测的 13.3%
+PC_GAIN = 3.5  # 局部对比度增益(伪深度强度): 越大越"只剩轮廓", 越小越像亮度图
+PC_FLOOR = 4  # 抬黑场(灰阶): 压掉平坦区的点, 让主体浮出黑底
+PC_GLOW = 3.0  # 辉光半径(px); 0 = 关掉, 点会变成硬像素块
+PC_TINT = (255, 214, 120)  # 青蓝 BGR; 实测色相 H≈98 且 p10-p90 仅 93-101
 HALFTONE_CELL = 6  # 端面网点的格子边长(px); 越小点越密
 HALFTONE_PAPER = (228, 240, 244)  # 网点底色(暖白纸) BGR
 HALFTONE_INK = (43, 23, 23)  # 网点墨色 BGR
@@ -185,6 +201,25 @@ def _fx_scan(lut: np.ndarray, period: int, depth: float) -> FaceEffect:
     return fn
 
 
+def _fx_duotone(dark: tuple[int, int, int], light: tuple[int, int, int], thresh: int) -> FaceEffect:
+    """硬阈值双色(丝网印/宝丽来): 亮度过线取亮色, 否则暗色, 没有中间调.
+
+    参数取自 douyin 那段 TouchDesigner 屏录的实测: 蓝框区域只有两簇色
+    BGR(146,101,42) 深蓝 57% / (240,232,222) 白 43%, 中间调**占比 0%**,
+    水平扫描线的跳变宽度 2px —— 是硬阈值, 不是 gradient map。
+
+    实现就是一张两段式 colormap, 与 _fx_lut 同样只有一次 applyColorMap。
+    """
+    duo = np.empty((256, 1, 3), np.uint8)
+    duo[:thresh] = np.array(dark, np.uint8)
+    duo[thresh:] = np.array(light, np.uint8)
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        return cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), duo)
+
+    return fn
+
+
 _EMBOSS_K = np.array([[-1, 0, 0], [0, 0, 0], [0, 0, 1]], np.float32)
 
 
@@ -203,6 +238,113 @@ def _fx_emboss(base: float, gain: float, tint: tuple[float, float, float]) -> Fa
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
         d = cv2.filter2D(g, cv2.CV_16S, _EMBOSS_K)
         return cv2.applyColorMap(ramp[d + 255], tint_lut)
+
+    return fn
+
+
+def _fx_quadtree(
+    min_cell: int, max_depth: int, var_thresh: float, line: tuple[int, int, int]
+) -> FaceEffect:
+    """四叉树自适应马赛克: 细节多的地方递归切小块, 平坦区留大块, 每块描边.
+
+    来自 douyin 那段 TouchDesigner 屏录 —— 脸部切到最细、白墙保持大块, 是
+    四个特效里辨识度最高的一个。
+
+    怎么做到实时: 用**积分图**(cv2.integral 一次给出 sum 和 sum²), 于是任意
+    矩形的均值/方差都是 O(1) 的四点查表, 与块大小无关。递归本身只对"够花"的
+    块继续下探, 平坦区一层就停 —— 实际访问的节点数远小于满四叉树。
+
+    切分判据是**亮度方差**: 方差大 = 块内有边缘/纹理 = 值得再切。
+    """
+    ink = np.array(line, np.uint8)
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        full_h, full_w = src.shape[:2]
+        # 四叉树的视觉是"块结构", 不是像素细节 —— 在缩略图上算完再最近邻放大,
+        # 观感一样但省一个数量级(1920x1080 满帧 13.5ms → 1.5ms)。
+        if max(full_h, full_w) > QUAD_WORK_MAX:
+            k = QUAD_WORK_MAX / max(full_h, full_w)
+            src = cv2.resize(src, (max(int(full_w * k), 8), max(int(full_h * k), 8)),
+                             interpolation=cv2.INTER_AREA)
+        h, w = src.shape[:2]
+        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        # 一次算好: 灰度的 sum/sum²(判方差) + 彩色的 sum(取叶子均色)。
+        # 有了它们, 递归里再没有任何与块面积成正比的运算。
+        sm, sq = cv2.integral2(g)
+        sc = cv2.integral(src)  # (h+1, w+1, 3)
+
+        def box(t: np.ndarray, x: int, y: int, bw: int, bh: int):
+            return t[y + bh, x + bw] - t[y, x + bw] - t[y + bh, x] + t[y, x]
+
+        out = np.empty_like(src)
+        stack = [(0, 0, w, h, 0)]
+        while stack:
+            x, y, bw, bh, d = stack.pop()
+            if bw < 2 or bh < 2:
+                continue
+            n = bw * bh
+            mean = box(sm, x, y, bw, bh) / n
+            var = box(sq, x, y, bw, bh) / n - mean * mean
+            if d < max_depth and bw > min_cell * 2 and bh > min_cell * 2 and var > var_thresh:
+                hw, hh = bw // 2, bh // 2
+                stack.append((x, y, hw, hh, d + 1))
+                stack.append((x + hw, y, bw - hw, hh, d + 1))
+                stack.append((x, y + hh, hw, bh - hh, d + 1))
+                stack.append((x + hw, y + hh, bw - hw, bh - hh, d + 1))
+                continue
+            cell = out[y : y + bh, x : x + bw]
+            cell[:] = box(sc, x, y, bw, bh) / n  # 叶子均色, O(1)
+            cell[0, :] = ink  # 上边
+            cell[:, 0] = ink  # 左边
+        if (h, w) != (full_h, full_w):
+            out = cv2.resize(out, (full_w, full_h), interpolation=cv2.INTER_NEAREST)
+        return out
+
+    return fn
+
+
+def _fx_pointcloud(
+    cell: int, gain: float, floor: int, glow: int, tint: tuple[int, int, int]
+) -> FaceEffect:
+    """点云 / 全息扫描: 主体拆成发光的青蓝点阵, 暗处近黑.
+
+    对照 douyin 那段 TouchDesigner 屏录实测: 亮部色相 H≈98(青蓝, p10-p90 只有
+    93-101 → 单一色相)、饱和 S≈101、亮点密度 13.3%(平均间距 2.7px)、暗区占 27%。
+
+    **这是单目近似**。原片那种"手在前更实、身体在后更淡"的分层来自深度相机,
+    这里没有深度信息, 用**局部对比度**代替: 边缘/纹理强的地方点更亮更密, 平坦
+    区衰减。观感神似(都是"物体由发光点采样而成"), 但不是同一个物理量 —— 想要
+    真分层得接深度相机或跑分割网络。
+
+    实现: 点阵掩码(cell 周期的规则栅格) × 局部对比度增益 → 单色相着色。
+    全程 OpenCV, 无逐点循环。
+    """
+    tint_lut = np.clip(
+        np.arange(256, dtype=np.float32)[:, None] * (np.array(tint, np.float32) / 255.0), 0, 255
+    ).astype(np.uint8)[:, None, :]
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        h, w = src.shape[:2]
+        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        # 1) 采样成点阵: 缩到 1/cell 再最近邻放大 —— 每个 cell 只剩一个采样值,
+        #    这一步才是"点云"的来源(先前版本用整幅栅格相与, 点太稀且丢结构)。
+        sh, sw = max(h // cell, 2), max(w // cell, 2)
+        small = cv2.resize(g, (sw, sh), interpolation=cv2.INTER_AREA)
+        # 2) 每个点的亮度 = 该处结构强度。局部对比度当伪深度: 边缘/纹理处的点亮,
+        #    平坦区(墙面/背景)的点暗下去 —— 视觉上物体"浮"出黑底。
+        det = cv2.absdiff(small, cv2.GaussianBlur(small, (0, 0), 2.0))
+        v = cv2.addWeighted(small, 0.35, cv2.convertScaleAbs(det, alpha=gain), 1.0, -float(floor))
+        pts = cv2.resize(v, (w, h), interpolation=cv2.INTER_NEAREST)
+        # 3) 点内开洞: 只留每个 cell 的中心一小块, 其余归零 → 看得见"点"
+        mask = np.zeros((cell, cell), np.uint8)
+        c0 = cell // 2
+        mask[max(c0 - 1, 0) : c0 + 1, max(c0 - 1, 0) : c0 + 1] = 255
+        tile = np.tile(mask, (h // cell + 1, w // cell + 1))[:h, :w]
+        pts = cv2.bitwise_and(pts, tile)
+        # 4) 辉光: 点扩散成小光斑, 叠回自身 → 发光感而不是硬像素
+        if glow:
+            pts = cv2.addWeighted(pts, 1.0, cv2.GaussianBlur(pts, (0, 0), glow), 1.6, 0.0)
+        return cv2.applyColorMap(pts, tint_lut)
 
     return fn
 
