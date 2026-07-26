@@ -50,6 +50,12 @@ PC_GAIN = 3.5  # 局部对比度增益(伪深度强度): 越大越"只剩轮廓"
 PC_FLOOR = 4  # 抬黑场(灰阶): 压掉平坦区的点, 让主体浮出黑底
 PC_GLOW = 3.0  # 辉光半径(px); 0 = 关掉, 点会变成硬像素块
 PC_TINT = (255, 214, 120)  # 青蓝 BGR; 实测色相 H≈98 且 p10-p90 仅 93-101
+# riso 版画(双色 + 通道错位边条); 参数取自 douyin 屏录实测
+RISO_DARK = (20, 142, 18)  # 暗部纯绿 BGR(实测绿区平均值)
+RISO_LIGHT = (238, 246, 248)  # 亮部近白 BGR
+RISO_THRESH = 118  # 亮度阈值
+RISO_SPLIT = 5  # 通道横向错位(px); 实测三通道边缘平均 x 相差十几像素
+RISO_DITHER = 90.0  # 有序抖动幅度(灰阶); 制造颗粒边界, 对齐原片绿区 std 23.7
 HALFTONE_CELL = 6  # 端面网点的格子边长(px); 越小点越密
 HALFTONE_PAPER = (228, 240, 244)  # 网点底色(暖白纸) BGR
 HALFTONE_INK = (43, 23, 23)  # 网点墨色 BGR
@@ -216,6 +222,56 @@ def _fx_duotone(dark: tuple[int, int, int], light: tuple[int, int, int], thresh:
 
     def fn(src: np.ndarray) -> np.ndarray:
         return cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), duo)
+
+    return fn
+
+
+def _fx_riso(
+    dark: tuple[int, int, int],
+    light: tuple[int, int, int],
+    thresh: int,
+    split: int,
+    dither: float = 0.0,
+) -> FaceEffect:
+    """双色版画 + 通道错位边条(riso / 孔版印刷的套色不准感).
+
+    douyin 那段里第四个特效。汐儿一开始以为是**粒子沙堆**(彩色颗粒下落堆积),
+    实测推翻了: 底部绿区占比在帧 158/168/178/188 上恒定 26%, **完全没有堆积**;
+    看着像沙丘的波浪边其实是人物深色上衣与白墙的交界。所以它不需要粒子系统,
+    也没有跨帧状态。
+
+    真正的机制是**每个通道在错开的位置上做阈值**——实测三通道的强边缘平均 x
+    分别是 B 91.4 / R 98.2 / G 113.8, 彼此错开十几像素。三通道一致的地方是纯
+    深色或纯亮色, 不一致的窄带就出现青/黄/品红, 正是孔版印刷套色不准的样子。
+
+    颜色取自实测: 暗部 BGR(20,142,18) 纯绿, 亮部近白。
+    """
+    d = np.array(dark, np.uint8)
+    li = np.array(light, np.uint8)
+    offs = (-split, 0, split)  # B 左移 / G 不动 / R 右移
+    # 有序抖动矩阵(Bayer 4x4): 阈值随位置微抖 → 边界不是光滑曲线而是**颗粒状**,
+    # 这正是原片那股"沙"质感的来源(实测原片绿区内部 std 23.7, 不是平涂)。
+    bayer = (
+        np.array(
+            [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]],
+            np.float32,
+        )
+        / 16.0
+        - 0.5
+    )
+
+    def fn(src: np.ndarray) -> np.ndarray:
+        h, w = src.shape[:2]
+        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY).astype(np.int16)
+        if dither:
+            tile = np.tile(bayer, (h // 4 + 1, w // 4 + 1))[:h, :w]
+            g = g + (tile * dither).astype(np.int16)
+        out = np.empty_like(src)
+        for i, off in enumerate(offs):
+            gi = np.roll(g, off, axis=1) if off else g
+            # 每通道独立阈值; 三通道一致处为纯色, 不一致的窄带就是彩色边条
+            out[..., i] = np.where(gi >= thresh, li[i], d[i])
+        return out
 
     return fn
 
