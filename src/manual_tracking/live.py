@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .paths import default_model_path, default_output_dir
+from .paths import default_output_dir, ensure_model
 from .renderer import STYLES, VectorOverlayRenderer
 from .tracker import FrameHands, HandPose, HandTracker
 
@@ -384,9 +384,7 @@ def run_live(
 ) -> None:
     if camera < 0:  # 自动: 挑本机内置摄像头, 绕开 iPhone 连续互通
         camera = _builtin_camera_index()
-    model = Path(model_path) if model_path else default_model_path()
-    if not model.exists():
-        raise FileNotFoundError(f"model missing: {model}")
+    model = ensure_model(model_path)
 
     # renderer 是风格名/别名的唯一规范化入口
     renderer = VectorOverlayRenderer(

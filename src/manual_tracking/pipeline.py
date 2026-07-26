@@ -9,7 +9,7 @@ from typing import Any
 
 import cv2
 
-from .paths import MODEL_URL, default_model_path
+from .paths import ensure_model
 from .renderer import VectorOverlayRenderer
 from .tracker import HandTracker
 
@@ -20,7 +20,7 @@ def export_landmarks_json(
     model_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Dump per-frame landmarks for AM / After Effects import."""
-    model = Path(model_path) if model_path else default_model_path()
+    model = ensure_model(model_path)
     frames: list[dict[str, Any]] = []
     meta: dict[str, Any] = {}
 
@@ -69,11 +69,7 @@ def process_video(
     input_path = Path(input_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    model = Path(model_path) if model_path else default_model_path()
-    if not model.exists():
-        raise FileNotFoundError(
-            f"Hand landmarker model missing: {model}\nDownload: {MODEL_URL}"
-        )
+    model = ensure_model(model_path)
 
     renderer = VectorOverlayRenderer(
         style=style,

@@ -27,13 +27,6 @@ BANNER_WHITE = (218, 230, 236)  # #ECE6DA
 BANNER_W_DARK = (16, 26, 42)  # #2A1A10
 
 # ---- 每面特效的参数(六个面各一套, 见 BOX_FACES) ----
-POSTER_LEVELS = 6  # 前面色阶断层的级数(2=极简剪影, 6=版画感, ≥24 基本等于连续)
-RED_SPLIT_PX = 3  # 背面横向色差: R 右移/B 左移的像素数(原片实测 R 相对 B +3px)
-SCAN_PERIOD = 4  # 底面全息扫描线周期(行)
-SCAN_DEPTH = 0.35  # 扫描线压暗深度 0-1
-EMBOSS_BASE = 210.0  # 端面浮雕的中性底(差分为 0 处的亮度)
-EMBOSS_GAIN = 1.1  # 浮雕对角差分增益(越大线条越硬)
-EMBOSS_TINT = (1.00, 0.94, 0.88)  # 浮雕的冷白染色 BGR 乘子
 # 硬阈值双色(丝网印): 取自 douyin TouchDesigner 屏录实测
 DUOTONE_DARK = (146, 101, 42)  # 深蓝 BGR(实测占 57%)
 DUOTONE_LIGHT = (240, 232, 222)  # 白 BGR(实测占 43%)
@@ -105,7 +98,7 @@ def _xray_cmap() -> np.ndarray:
     return cv2.cvtColor(sol.reshape(256, 1), cv2.COLOR_GRAY2BGR)
 
 
-# 逐像素实测的盒子三面 LUT: 顶面蓝=反相型, 前面绿/背面红=正相型
+# 顶面蓝的逐像素实测 LUT(反相型: 背景越亮, 面越暗)
 BLUE_LUT = _build_lut(
     [
         (30, (254, 142, 82)),
@@ -114,33 +107,6 @@ BLUE_LUT = _build_lut(
         (150, (200, 87, 55)),
         (200, (213, 94, 58)),
         (250, (234, 135, 116)),
-    ]
-)
-GREEN_LUT = _build_lut(
-    [
-        (16, (44, 76, 42)),
-        (48, (61, 108, 61)),
-        (80, (80, 131, 77)),
-        (144, (117, 190, 153)),
-        (176, (154, 233, 215)),
-        (255, (224, 255, 255)),
-    ]
-)
-# 背面红。原片逐像素实测值是一条很窄的暗红带(灰60→亮度52.7, 灰160→82.0,
-# 全域跨度仅 60), 实测**比 source_dim=0.65 压过的背景还暗**(灰160 处背景 104
-# vs 红面 82) —— 翻过去了也读不出来, 用户反馈的"看不到后面"有一半是这个。
-# 下面这组保持红相(红度 @灰110 从 54 提到 169)但把动态范围拉到 174, 每一档
-# 都亮过背景。原片测量值保留在上面的注释里, 要还原保真度就换回去。
-RED_LUT = _build_lut(
-    [
-        (16, (24, 20, 58)),
-        (48, (32, 26, 112)),
-        (80, (38, 30, 168)),
-        (112, (46, 36, 212)),
-        (144, (58, 46, 238)),
-        (176, (84, 68, 250)),
-        (216, (134, 116, 254)),
-        (255, (190, 180, 255)),
     ]
 )
 YELLOW_CMAP = _duotone_cmap(BANNER_Y_DARK, BANNER_YELLOW, BANNER_THRESH)
@@ -158,54 +124,15 @@ FaceEffect = Callable[[np.ndarray], np.ndarray]
 #   · 红背面有横向色差: R 相对 B 位移 +3px(r=0.683), 白描边上肉眼可见冷暖边
 #   · **没有扫描线**: 去趋势后行方向频谱无主导频率, 2 行调制深度只有 0.07 灰阶
 #     (肉眼看到的"横条"是 h.264 压缩块, 不是特效)
-# 端面/底面在原片里几乎没露过, 属于自由创作区; 取用户自己那套 hand-frame-glitch
-# 的风格语汇(浮雕线稿 / 半调网点 / 全息扫描线)。
+# 端面/底面在原片里几乎没露过, 属于自由创作区; 取 douyin 屏录 + 用户自己那套
+# hand-frame-glitch 的风格语汇(点云全息 / 四叉树马赛克 / 半调网点)。
 
 
-def _fx_lut(lut: np.ndarray, split: int = 0) -> FaceEffect:
-    """gradient map; split>0 时附加横向色差(R 右移、B 左移)."""
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        out = cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), lut)
-        if split:
-            out[..., 2] = np.roll(out[..., 2], split, axis=1)
-            out[..., 0] = np.roll(out[..., 0], -split, axis=1)
-        return out
-
-    return fn
-
-
-def _fx_poster(lut: np.ndarray, levels: int) -> FaceEffect:
-    """gradient map + 色阶断层: 先把灰度量化成 levels 级再查表 → 版画式硬边。
-
-    量化在**查表前**做, 所以断层落在 LUT 的采样点上, 每一级都是 LUT 上的一个
-    确定颜色, 不会出现插值出来的中间色。
-    """
-    step = 256.0 / max(levels, 2)
-    q = (np.clip((np.arange(256) / step).astype(np.int32), 0, levels - 1) * step + step * 0.5).astype(
-        np.uint8
-    )
+def _fx_lut(lut: np.ndarray) -> FaceEffect:
+    """gradient map: 灰度 → LUT 查表, 一次 OpenCV 调用."""
 
     def fn(src: np.ndarray) -> np.ndarray:
-        g = cv2.LUT(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), q)
-        return cv2.applyColorMap(g, lut)
-
-    return fn
-
-
-def _fx_scan(lut: np.ndarray, period: int, depth: float) -> FaceEffect:
-    """gradient map + 全息扫描线: 每 period 行压暗 depth.
-
-    只对 1/period 的行做原地缩放(切片是视图), 不是整幅乘一个列向量——后者
-    要分配一个全画幅 float 中间量, 实测慢 4 倍。
-    """
-    keep = 1.0 - depth
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        out = cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), lut)
-        rows = out[::period]
-        cv2.convertScaleAbs(rows, dst=rows, alpha=keep)
-        return out
+        return cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), lut)
 
     return fn
 
@@ -249,7 +176,6 @@ def _fx_riso(
 
     颜色取自实测: 暗部 BGR(20,142,18) 纯绿, 亮部近白。
     """
-    d = np.array(dark, np.uint8)
     offs = (-split, 0, split)  # B 左移 / G 不动 / R 右移
     # 有序抖动矩阵(Bayer 4x4): 阈值随位置微抖 → 边界不是光滑曲线而是**颗粒状**,
     # 这正是原片那股"沙"质感的来源(实测原片绿区内部 std 23.7, 不是平涂)。
@@ -278,28 +204,6 @@ def _fx_riso(
         g = cv2.add(g, big[:h, :w])  # 饱和加法, 不会回绕
         return cv2.merge([cv2.LUT(np.roll(g, o, axis=1) if o else g, luts[i])
                           for i, o in enumerate(offs)])
-
-    return fn
-
-
-_EMBOSS_K = np.array([[-1, 0, 0], [0, 0, 0], [0, 0, 1]], np.float32)
-
-
-def _fx_emboss(base: float, gain: float, tint: tuple[float, float, float]) -> FaceEffect:
-    """浮雕线稿: 对角差分 + 常数底 → 白色浅浮雕(端面读作"截面").
-
-    差分值域是 [-255,255], 所以整条 base+gain*d 曲线预算成 511 项查表; 染色
-    再用一张 256 项 colormap。两次查表代替两个全画幅 float 乘法(实测 13.2→1.3ms)。
-    """
-    ramp = np.clip(base + np.arange(-255, 256, dtype=np.float32) * gain, 0, 255).astype(np.uint8)
-    tint_lut = np.clip(
-        np.arange(256, dtype=np.float32)[:, None] * np.array(tint, np.float32), 0, 255
-    ).astype(np.uint8)[:, None, :]
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-        d = cv2.filter2D(g, cv2.CV_16S, _EMBOSS_K)
-        return cv2.applyColorMap(ramp[d + 255], tint_lut)
 
     return fn
 

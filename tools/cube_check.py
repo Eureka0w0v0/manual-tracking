@@ -23,49 +23,8 @@ from manual_tracking.floatcube import (  # noqa: E402
     ORBIT_GAIN,
     FloatCube,
 )
-from manual_tracking.landmarks import (  # noqa: E402
-    INDEX_MCP,
-    INDEX_TIP,
-    MIDDLE_MCP,
-    PINKY_MCP,
-    RING_MCP,
-    THUMB_CMC,
-    THUMB_TIP,
-    WRIST,
-)
-from manual_tracking.tracker import HandPose  # noqa: E402
-
-SHAPE = (720, 1280)
-PALM = 160.0
-
-
-# 掌心用的是 PALM_RING 六个点的平均, 所以合成手必须把这六个点全设上 ——
-# 少设一个, 那个 (0,0) 就会把掌心往画面左上角拽, 位移被稀释, 测出来的
-# "跟手程度"是假的。
-_PALM_LAYOUT = {  # landmark → 相对手中心的偏移(掌宽的倍数)
-    WRIST: (0.0, 0.9),
-    THUMB_CMC: (-0.55, 0.7),
-    INDEX_MCP: (-0.5, 0.0),
-    MIDDLE_MCP: (-0.15, -0.05),
-    RING_MCP: (0.18, 0.0),
-    PINKY_MCP: (0.5, 0.1),
-}
-
-
-def hand(cx: float, cy: float, *, pinch: bool, tid: int = 0) -> HandPose:
-    """一只合成手: 整体刚性平移, 捏合时拇指尖贴到食指尖, 松开时拉开 0.9 掌宽."""
-    p = np.zeros((21, 3), np.float32)
-    for lm, (fx, fy) in _PALM_LAYOUT.items():
-        p[lm] = (cx + PALM * fx, cy + PALM * fy, 0)
-    p[INDEX_TIP] = (cx, cy - PALM * 0.6, 0)
-    off = 0.0 if pinch else PALM * 0.9
-    p[THUMB_TIP] = (cx - off, cy - PALM * 0.6, 0)
-    return HandPose(handedness="Right", score=1.0, points=p, track_id=tid)
-
-
-def pair2(cx: float, half: float = 200.0, cy: float = 400.0) -> list[HandPose]:
-    """一对都捏住的手, 中点在 cx, 相距 2*half."""
-    return [hand(cx - half, cy, pinch=True, tid=0), hand(cx + half, cy, pinch=True, tid=1)]
+from manual_tracking.landmarks import THUMB_TIP  # noqa: E402
+from synth import PALM, SHAPE, hand, pair2  # noqa: E402
 
 
 def visible(cube: FloatCube) -> str:
@@ -109,7 +68,7 @@ def main() -> int:
             t = visible(c)
             if not seq or seq[-1] != t:
                 seq.append(t)
-        laps = sum(1 for a, b in zip(seq, seq[1:]) if a == seq[0] and b == seq[1])
+        laps = sum(1 for a, b in zip(seq, seq[1:], strict=False) if a == seq[0] and b == seq[1])
         good &= check(
             f"{axis}能一直翻不回头",
             set(seq) == expect and laps >= 3,
@@ -184,7 +143,8 @@ def main() -> int:
     a, b = hand(400, 400, pinch=True, tid=0), hand(900, 400, pinch=False, tid=1)
     for i in range(10):
         c.update([a, b] if i % 2 == 0 else [b, a], SHAPE)
-    good &= check("手序对调不炸", float(np.linalg.norm(c._spin)) < 1e-6, f"|spin| = {float(np.linalg.norm(c._spin)):.2e}")
+    spin = float(np.linalg.norm(c._spin))
+    good &= check("手序对调不炸", spin < 1e-6, f"|spin| = {spin:.2e}")
 
     # 8) 限幅只该挡检测跳变, 不该误伤真实手速(实测真手 p99 = 109 px/帧)
     c = FloatCube()
@@ -203,16 +163,16 @@ def main() -> int:
 
     # 9) 双手模式掉一帧(两手捏在一起会互相遮挡): 立方体该停住, 不该切去转动
     c = FloatCube()
-    two = lambda cx: [hand(cx - 200, 400, pinch=True, tid=0), hand(cx + 200, 400, pinch=True, tid=1)]
     for i in range(20):
-        c.update(two(400 + i * 6), SHAPE)
+        c.update(pair2(400 + i * 6), SHAPE)
     rot_before, pos_before = c.rot.copy(), c.pos.copy()
     c.update([hand(600, 400, pinch=True, tid=0)], SHAPE)  # 右手这帧没测到
     turned = float(np.degrees(np.arccos(np.clip((np.trace(rot_before.T @ c.rot) - 1) / 2, -1, 1))))
     good &= check(
         "双手掉一帧不乱转",
         turned < 1.0 and c.mode == "move",
-        f"掉帧后转了 {turned:.2f}° (宽限前 {np.linalg.norm(pos_before - c.pos):.1f}px 位移), 模式仍是 {c.mode}",
+        f"掉帧后转了 {turned:.2f}° "
+        f"(宽限前 {np.linalg.norm(pos_before - c.pos):.1f}px 位移), 模式仍是 {c.mode}",
     )
 
     # 10) 松手后的自转: 要慢到不晕但看得出是活的

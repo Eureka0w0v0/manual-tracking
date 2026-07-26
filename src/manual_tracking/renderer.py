@@ -32,14 +32,13 @@ wire — 纯骨架调试。
 from __future__ import annotations
 
 import random
-from typing import Callable
 
 import cv2
 import numpy as np
 
 from .floatcube import FloatCube
-from .glassbox import GlassBox
-from .handgeom import ORIENT_GAIN, grip, orient, palm_center, pinch
+from .glassbox import MIN_SPAN_PX, GlassBox
+from .handgeom import orient, palm_center, pinch
 from .effects import (
     BOX_FACES,
     GLITCH_H,
@@ -59,17 +58,11 @@ from .effects import (
 )
 from .landmarks import (
     CONNECTIONS,
-    INDEX_DIP,
-    INDEX_MCP,
     INDEX_TIP,
     MIDDLE_TIP,
-    PALM_RING,
-    PINKY_DIP,
-    PINKY_MCP,
     PINKY_TIP,
     RING_TIP,
     THUMB_TIP,
-    WRIST,
 )
 from .tracker import FrameHands, HandPose
 
@@ -84,7 +77,6 @@ FRINGE_WARM = (40, 150, 255)  # 描边色差晕: 亮侧橙
 FRINGE_COOL = (235, 225, 90)  # 描边色差晕: 暗侧青
 
 TIP_IDS = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
-_PALM_IDX = np.array(PALM_RING, dtype=np.int32)
 
 # ---- 风格注册表(唯一权威; live/__main__ 从这里导入, 不要手抄) ----
 STYLES = ("mirror", "screen", "cube", "banner", "wire")
@@ -104,10 +96,8 @@ def canon_style(name: str) -> str:
 
 
 # ---- tunables (哥哥要调效果基本都在这里) ----
-MIN_SPAN_PX = 40.0  # 双手跨距小于此值不画特效
 PINCH_SHUT_PX = 16.0  # 双手捏距都小于此值 → 侧视细线(实测捏合张开 10-34px@1920)
 ROLE_HYST_PX = 25.0  # 左右角色互换需越过的掌心 x 差(防双手并拢时颜色频闪)
-ORIENT_GAIN = 2.2  # 手掌朝向→明暗的灵敏度(越大翻手反应越猛)
 BASE_B = 0.85  # 默认亮度(纸平摊时接近亮白)
 B_SWING = 0.65  # 翻手带来的亮度摆幅
 COOL_START = 0.7  # 亮度低于此值开始变冷
@@ -447,7 +437,7 @@ class VectorOverlayRenderer:
         drawn: set[tuple[int, int]] = set()
         for _, _, face in vis:
             idx = face.verts
-            for a, b in zip(idx, idx[1:] + idx[:1]):
+            for a, b in zip(idx, idx[1:] + idx[:1], strict=True):  # 4 顶点循环成 4 条棱
                 e = (a, b) if a < b else (b, a)
                 if e not in drawn:
                     drawn.add(e)
@@ -480,7 +470,7 @@ class VectorOverlayRenderer:
             drawn: set[tuple[int, int]] = set()
             for _, face in front:
                 idx = face.verts
-                for a, b in zip(idx, idx[1:] + idx[:1]):
+                for a, b in zip(idx, idx[1:] + idx[:1], strict=True):
                     e = (a, b) if a < b else (b, a)
                     if e not in drawn:
                         drawn.add(e)

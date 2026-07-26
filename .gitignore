@@ -9,6 +9,13 @@ __pycache__/
 output/
 *.h264.mp4
 
+# 模型: MediaPipe 官方产物(7.5MB), 首次运行自动下载
+# 见 src/manual_tracking/paths.py 的 ensure_model()
+models/
+
+# assets/sample.mp4 **是跟踪的**: 它是所有实测数字的黄金基准, 没有下载来源,
+# 移出仓库 = docs 里的每一个数字都不可复现。2.1MB 换可复现性, 值。
+
 # editor
 .idea/
 .vscode/

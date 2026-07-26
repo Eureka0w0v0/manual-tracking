@@ -1,0 +1,6 @@
+# 开发用, run.sh 不装这些(运行时 venv 保持干净)。
+#   .venv/bin/pip install -r requirements-dev.txt
+#   .venv/bin/ruff check src tools tests   # 静态检查
+#   .venv/bin/pytest                       # 纯逻辑契约, 不到 1 秒
+ruff>=0.6
+pytest>=8.0

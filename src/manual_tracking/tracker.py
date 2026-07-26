@@ -229,7 +229,9 @@ class HandTracker:
                 np.array([[lm.x * iw * inv, lm.y * ih * inv, lm.z] for lm in lms], dtype=np.float32)
             )
 
-        for (label, score), (pts, sid) in zip(labels, self._track(pts_list, float(timestamp_ms))):
+        # _track 保证"与输入同序等长", strict=True 把这条契约钉成断言
+        tracked = self._track(pts_list, float(timestamp_ms))
+        for (label, score), (pts, sid) in zip(labels, tracked, strict=True):
             hands.append(HandPose(handedness=label, score=score, points=pts, track_id=sid))
 
         order = {"Right": 0, "Left": 1}

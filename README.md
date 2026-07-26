@@ -29,7 +29,9 @@
 - **`banner`**：TouchDesigner 横幅（v2）——黄阈值头带 / X-ray 中窗 / 白分隔线 / 悬出红脚带，全部是摄像头画面的屏幕空间双色调
 - **`wire`**：纯骨架调试（`fabric`/`track`/`outline` 为旧名别名）
 
-可调参数集中在 `renderer.py` 顶部 tunables 区。
+可调参数按层分布：`mirror`/`banner` 的在 `renderer.py` 顶部 tunables 区，`screen`
+的盒子几何在 `glassbox.py`，`cube` 在 `floatcube.py`，每个面的像素处理参数在
+`effects.py` 顶部。下面的实时键位改的是同名字段，退出后恢复常量默认值。
 
 ```bash
 ./run.sh live                              # 默认 1920x1080，自动挑本机内置摄像头
@@ -39,13 +41,17 @@
 # 或双击 start-live.command
 ```
 
+首次运行会自动下载 MediaPipe 手部模型（~7.5MB）到 `models/`。它不进 git——官方
+URL 随时能取回字节级一致的同一份，没必要让仓库永远背着它。想用自己的模型就
+`--model /path/to/xxx.task`（显式指定时**不会**自动下载，缺了直接报错）。
+
 | 键 | 作用 |
 |---|---|
 | `S` | mirror / screen / cube / banner / wire |
 | `D` | 实拍底 / 黑底 |
-| `+` `-` | 实拍底亮度 |
+| `o` `p` | 实拍底亮度（暗 / 亮） |
 | `R` | 录制（按实测帧率、不含 HUD）→ `output/live_*.mp4` |
-| `Q` | 退出 |
+| `Q` / `Esc` | 退出 |
 
 `screen` 的实时调参（HUD 上同步显示当前值）：
 
@@ -57,6 +63,9 @@
 | `7` `8` | `roll_max_rate` | 角速度上限 °/帧（挡掉 `_orient` 饱和区翻符号造成的瞬移） |
 | `9` `0` | `roll_resp` | 旋转跟手程度（大=跟手，小=顺滑） |
 | `g` `h` | `face_alpha` | 玻璃通透度（内壁 alpha 按 0.42 倍跟着走） |
+| `-` `=`（或 `_` `+`） | `anchor_resp` | 锚点跟手程度（大=跟手，小=稳但钝） |
+| `<` `>` | `gap_shut` | 双手靠多近才收起盒子（按掌宽归一，与手离镜头远近无关） |
+| `{` `}` | `box_edge_w` | 盒子棱线粗细 px（0=无缝，默认 0） |
 
 `cube` 的实时调参：
 
@@ -67,6 +76,32 @@
 | `X` | — | 位姿归位（转乱了/推到边上时按） |
 
 HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来区分「几何没转到」和「画了但读不出来」。
+
+## 开发
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ruff check src tools tests                       # 静态检查（配置在 pyproject.toml）
+.venv/bin/pytest                                           # 纯逻辑契约，90 条，<1 秒
+PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，11 条断言
+PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言
+PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数
+```
+
+验证分三层，各挡各的：
+
+| 层 | 位置 | 挡什么 | 依赖 |
+|---|---|---|---|
+| 契约 | `tests/` | 改错了会崩：面拓扑、effect 的尺寸/不可变契约、盒子刚性、别名表 | 无（合成手，不读素材） |
+| 手感 | `tools/cube_check.py` | 拖不动、转回头、松手乱飘 | 无（合成手） |
+| 回归 | `tools/e2e_check.py` | 改差了不好用：颜色频闪、背面读不出 | 样片 + 模型 |
+
+改完 `screen` 的几何/映射/滤波必须跑 `e2e_check`：它是唯一能发现「可见面每秒切换
+5 次」这类体感灾难的手段——`tests/` 那 90 条全绿也照样看不见频闪。基线与结论见
+[`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md) §3.6–3.8。
+
+`tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手（21 个 landmark 全铺满：
+少设一个，那个 `(0,0)` 会把掌心往画面左上角拽，测出来的「跟手程度」是假的）。
 
 ## TouchDesigner
 

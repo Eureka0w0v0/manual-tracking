@@ -1,0 +1,25 @@
+# 只放工具配置。包本身不走安装, 由 run.sh 设 PYTHONPATH=src 直接跑。
+[tool.ruff]
+line-length = 120  # 注释多为中文, 100 会把大量说明性注释判超长(实测 163 行)
+src = ["src", "tools", "tests"]
+
+[tool.ruff.lint]
+# F  = pyflakes: 未使用的 import/变量、重名覆盖(F811)。项目里出现过
+#      `from .handgeom import ORIENT_GAIN` 又在下面 `ORIENT_GAIN = 2.2` 盖掉的情况,
+#      两处都没被用到却看着像旋钮 —— 这条规则就是为了挡它。
+# E/W = pycodestyle: 语法级排版错误。
+# B   = bugbear: 可变默认参数、循环里绑定闭包变量之类的真 bug。
+select = ["E", "F", "W", "B"]
+ignore = [
+    "E741",  # 单字母变量名 l/I/O: 几何代码里 l=length、o=orient 是本地惯例
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 验证脚本/测试要先把 src 放上 sys.path 才能 import manual_tracking, 模块级
+# import 必然在语句之后。文件里已逐行标了 noqa, 这里统一豁免。
+"tools/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

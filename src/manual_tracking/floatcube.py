@@ -121,7 +121,7 @@ class FloatCube:
 
     def _pinching(self, keys: list[int], ratios: list[float]) -> list[bool]:
         out = []
-        for k, r in zip(keys, ratios):
+        for k, r in zip(keys, ratios, strict=True):  # 同源于 use, 等长
             self._pinch[k] = r < (PINCH_OFF if self._pinch.get(k, False) else PINCH_ON)
             out.append(self._pinch[k])
         for gone in set(self._pinch) - set(keys):  # 手离场就忘掉它, 别无限攒
@@ -140,7 +140,7 @@ class FloatCube:
         pins = self._pinching(keys, [_pinch_ratio(hd) for hd in use])
         pts = [_drag_point(hd) for hd in use]
         n = sum(pins)
-        self.marks = list(zip(pts, pins))
+        self.marks = list(zip(pts, pins, strict=True))
 
         if n >= 2:  # ---- 双手: 平移 + 缩放 ----
             self._grab = None

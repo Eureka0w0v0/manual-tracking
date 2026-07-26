@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
-from .paths import default_model_path
 from .pipeline import export_landmarks_json, process_video
 from .live import run_live
 from .renderer import STYLE_ALIASES, STYLES
@@ -78,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    model = args.model or str(default_model_path())
+    model = args.model  # None = 用默认位置, 缺了就自动下载(见 paths.ensure_model)
 
     if args.cmd == "run":
         out = process_video(
