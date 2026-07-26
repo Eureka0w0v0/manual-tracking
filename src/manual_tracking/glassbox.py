@@ -77,12 +77,17 @@ BOX_ANCHOR_RESP = 0.25  # 静止时每帧吸收的新锚点比例(越小越稳�
 BOX_ANCHOR_RESP_GAIN = 0.001
 BOX_ANCHOR_RESP_MAX = 0.95  # 上限; 留一点滤波, 单帧误检不会整盒瞬移
 BOX_ANCHOR_RATE_SMOOTH = 0.5  # 锚点速度估计自身的 EMA
-# 双手靠拢 → 收起盒子; 拉开 → 重新出现。用 **跨距 / 掌宽** 的比值而不是像素,
-# 这样离镜头远近都是同一个手势(近处手大、跨距也大, 比值不变)。
-# 实测原片: 双手最近时比值 0.72(那就是贴在一起), 正常展开时中位 4.26。
-# 两档做滞回 —— 手停在临界距离上时, 单阈值会让盒子逐帧闪现。
-SPAN_SHUT = 1.10  # 比值低于它 → 收起
-SPAN_OPEN = 1.60  # 比值高于它 → 重新出现; 与上面拉开间距才防得住频闪
+# 双手碰到一起 → 收起盒子; 拉开 → 重新出现。
+# 判据是**两手之间的最近距离**(21x21 个点对取最小), 按掌宽归一化。
+#
+# 为什么不用锚点距离: 锚点在指弧附近, 两手贴合时锚点仍隔着约一个手宽 ——
+# 实测原片双手最接近的那一帧, 锚点距离还有 0.72 个掌宽, 而最近点只剩 0.03。
+# 拿锚点距离当"碰上了"的判据, 阈值要设到 1.1 以上, 那时手其实还离得挺远,
+# 反过来真贴上了却因为锚点没到阈值而不触发。最近距离直接对应"碰到"这件事。
+#
+# 按掌宽归一 → 与手离镜头远近无关(近处手大, 像素间距也大, 比值不变)。
+GAP_SHUT = 0.12  # 最近距离 / 掌宽 低于它 → 收起(≈ 指头挨上)
+GAP_OPEN = 0.45  # 高于它 → 重新出现; 与上面拉开间距才防得住频闪
 
 
 class GlassBox:
@@ -145,6 +150,17 @@ class GlassBox:
         """
         cL, fL, sL, pL, oL = grip(left)
         cR, fR, sR, pR, oR = grip(right)
+        # 碰到一起就收起。用**未滤波的原始 landmark**算最近距离 —— 锚点带了
+        # 自适应 EMA, 快速合拢时它滞后于真手, 会漏判。
+        a, b = left.points[:, :2], right.points[:, :2]
+        gap = float(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2).min())
+        gap_r = gap / max((pL + pR) * 0.5, 1e-3)
+        self._shut = gap_r < (GAP_OPEN if self._shut else GAP_SHUT)
+        if self._shut:
+            keep = self._shut  # reset 会清滤波历史, 但滞回状态必须留着
+            self.reset()
+            self._shut = keep
+            return None
         t = self.anchor_lift  # 0=掌心(偏低) 1=指弧中点(原片高度)
         anc = np.stack([cL + (fL - cL) * t, cR + (fR - cR) * t])  # (2,2) 左右锚点
         # 速度自适应滤波: 手不动时重滤(去抖), 手快速移动时自动放开(不拖影)。
@@ -163,16 +179,8 @@ class GlassBox:
         gL, gR = anc[0], anc[1]
         span_v = gR - gL
         span = float(np.linalg.norm(span_v))
-        # 双手靠拢 → 收起。判据是 跨距/掌宽 的比值(尺度无关), 带滞回。
-        ratio = span / max((pL + pR) * 0.5, 1e-3)
-        self._shut = ratio < (SPAN_OPEN if self._shut else SPAN_SHUT)
-        if self._shut or span < MIN_SPAN_PX:
-            # 清掉滤波历史: 否则再拉开时 ψ 从旧值继续插值, 且 _psi_rate 还留着
-            # 上次的大角速度 → 恢复的头几帧 k 贴在 BOX_ROLL_RESP_MAX 上, 滤波
-            # 形同虚设。**但保留 _shut** —— 它是滞回状态, 清了滞回就等于没有。
-            keep = self._shut
+        if span < MIN_SPAN_PX:  # 兜底: 锚点几乎重合, 几何本身没法解
             self.reset()
-            self._shut = keep
             return None
 
         # 长轴深度分量: 掌宽比 → 单目深度线索(哪只手更近就更大)。
