@@ -85,7 +85,7 @@ HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check src tools tests                       # 静态检查（配置在 pyproject.toml）
 .venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，95 条，<1 秒
-PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，23 条断言
+PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，24 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数
 ```

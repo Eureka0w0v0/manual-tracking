@@ -379,6 +379,24 @@ def main() -> int:
         f"尖峰 1 帧仍捏着={one}, 恢复={back}, 连续 {PINCH_OFF_FRAMES} 帧后才松",
     )
 
+    # 23) 掉帧回来, 捏合**滞回**也要还在: 比值 0.5 落在 ON(0.42)~OFF(0.62)
+    #     之间, 全靠滞回撑着"仍在捏"。若掉帧把 _pinch 清了, 回来按新手从严
+    #     判(须 <ON) → 明明还捏着却被判松 → 抓取从下面被拆台, TTL 白保。
+    c = FloatCube()
+    c.update([hand(640, 456, pinch=True, tid=9)], SHAPE)  # 捏死抓住
+    loose = hand(640, 456, pinch=True, tid=9)
+    loose.points[THUMB_TIP] = (640 - PALM * 0.5, 456 - PALM * 0.6, 0)  # 捏松到 0.5
+    c.update([loose], SHAPE)
+    still = c._pinch.get(9, False)  # 滞回撑住
+    for _ in range(3):
+        c.update([], SHAPE)  # 检测丢 3 帧
+    c.update([loose], SHAPE)  # 回来, 还是松捏 0.5
+    good &= check(
+        "松捏的手掉帧回来不脱手",
+        still and c._grabbing.get(9, False),
+        f"滞回捏合={still}, 掉 3 帧回来仍抓着={c._grabbing.get(9, False)}",
+    )
+
     print("\n" + ("全部通过" if good else "有不通过项"))
     return 0 if good else 1
 

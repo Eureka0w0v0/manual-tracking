@@ -203,6 +203,11 @@ class FloatCube:
             self._pinch[k] = pin
             out.append(pin)
         for gone in set(self._pinch) - set(keys):  # 手离场就忘掉它, 别无限攒
+            if self._grab_ttl.get(gone, 0) > 0:
+                # 抓取宽限中: 捏合**滞回**一起保。丢了它, 松捏的手(比值在
+                # ON~OFF 之间, 全靠滞回撑着)掉帧回来会按新手从严判 → 明明
+                # 还捏着却被判松, TTL 保住的抓取被从下面拆台。
+                continue
             del self._pinch[gone]
             self._unpin.pop(gone, None)
         return out
@@ -216,6 +221,17 @@ class FloatCube:
 
         use = hands[:2]
         keys = [self._key(i, hd) for i, hd in enumerate(use)]
+        # 抓取宽限先行(必须在 _pinching 之前, 它的清理要读 _grab_ttl):
+        # 抓着的手检测短暂丢失 → 抓取按 TTL 冻结保留, 手回来直接续上 ——
+        # 即使那时捏点已在盒子半径之外(建立过就不要求重新建立)。
+        for gone in set(self._grabbing) - set(keys):
+            if self._grabbing[gone] and self._grab_ttl.get(gone, GRAB_TTL) > 0:
+                self._grab_ttl[gone] = self._grab_ttl.get(gone, GRAB_TTL) - 1
+            else:
+                del self._grabbing[gone]
+                self._grab_ttl.pop(gone, None)
+        for k2 in keys:
+            self._grab_ttl.pop(k2, None)  # 手回来了, 宽限复位
         pins = self._pinching(keys, [_pinch_ratio(hd) for hd in use])
         pts = [_drag_point(hd) for hd in use]
 
@@ -236,16 +252,6 @@ class FloatCube:
                     self.ripples.append((cpt, 0))
             grabs.append(held)
             self._grabbing[k2] = held
-        for gone in set(self._grabbing) - set(keys):
-            if self._grabbing[gone] and self._grab_ttl.get(gone, GRAB_TTL) > 0:
-                # 检测短暂丢手: 抓取状态按 TTL 冻结保留, 手回来直接续上 ——
-                # 即使那时捏点已在盒子半径之外(建立过就不要求重新建立)。
-                self._grab_ttl[gone] = self._grab_ttl.get(gone, GRAB_TTL) - 1
-            else:
-                del self._grabbing[gone]
-                self._grab_ttl.pop(gone, None)
-        for k2 in keys:
-            self._grab_ttl.pop(k2, None)  # 手回来了, 宽限复位
         n = sum(grabs)
         self.marks = list(zip(pts, grabs, strict=True))
 
