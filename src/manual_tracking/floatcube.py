@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .handgeom import palm_center
-from .landmarks import INDEX_MCP, INDEX_TIP, PINKY_MCP, THUMB_TIP
+from .handgeom import palm_center, pinch
+from .landmarks import INDEX_MCP, INDEX_TIP, PINKY_MCP, PINKY_TIP, THUMB_TIP
 from .tracker import HandPose
 
 # ---- tunables ----
@@ -68,6 +68,26 @@ GRIP_DAMP = 0.5
 # 宁可停住不动, 也不要乱转。
 TWO_HAND_HOLD = 8
 
+# ---- 平移/缩放惯性(与转动同一套物理语言: 带走动量 → 摩擦滑行 → 碰壁反弹) ----
+MOVE_DAMP = 0.90  # 平移摩擦(每帧乘); 半衰 6.6 帧, 甩出去滑 ~1 秒
+MOVE_CARRY_MAX = 40.0  # 松手能带走的平移速度上限(px/帧); 滑行总程 = 40×0.9/0.1 = 360px
+BOUNCE = 0.55  # 碰壁后速度保留比例; 两三次弹跳后自然停下
+ZOOM_DAMP = 0.70  # 缩放速率摩擦; 尺寸是指数量, 惯性给短一点, 否则会滚雪球
+ZOOM_CARRY_MAX = 0.04  # 松手能带走的缩放速率上限(倍/帧)
+# ---- 炸开视图(exploded view): 张开的手 → 六个面沿外法线飞离体心 ----
+# 驱动量 = 未捏合手的 指弧展开量/掌宽(与手离镜头远近无关)。捏住的手在控制
+# 转动, 不参与; 双手都捏着(move)也不炸。阈值若不跟手, 抬手看 HUD debug 里
+# 的"张开"实测值, 改下面两个数即可。
+EXPLODE_LO = 0.70  # 比值低于它 = 完全收拢(合成手半开姿态是 0.56)
+EXPLODE_HI = 1.05  # 高于它 = 全炸开
+EXPLODE_RESP = 0.30  # 炸开程度的一阶惯性(和转动同款手感语言)
+EXPLODE_DIST = 0.55  # 全炸开时面心飞离体心的距离(边长的倍数)
+RIPPLE_LIFE = 7  # 抓握涟漪寿命(帧); floatcube 负责老化, renderer 只读
+# 抓取判定半径(边长的倍数): 捏点落进 pos ± size×这个值 才算"抓住了"。
+# 只在**建立**抓取那一刻判定 —— 建立后跟手保持(双手缩放会把手拉出半径,
+# 中途脱手等于"捏着的东西自己滑掉"), 松开捏合才断。
+GRAB_RADIUS = 0.75
+
 MODE_IDLE, MODE_TURN, MODE_MOVE = "idle", "turn", "move"
 
 
@@ -76,6 +96,14 @@ def _pinch_ratio(hand: HandPose) -> float:
     xy = hand.points[:, :2].astype(np.float32)
     palm = float(np.linalg.norm(xy[INDEX_MCP] - xy[PINKY_MCP]))
     return float(np.linalg.norm(xy[THUMB_TIP] - xy[INDEX_TIP])) / max(palm, 1e-3)
+
+
+def _spread_ratio(hand: HandPose) -> float:
+    """张开程度 = 指弧展开量(食指尖↔小指尖) / 掌宽. 握拳变小, 五指张开变大."""
+    xy = hand.points[:, :2]
+    spread = float(np.linalg.norm(xy[INDEX_TIP] - xy[PINKY_TIP]))
+    palm = float(np.linalg.norm(xy[INDEX_MCP] - xy[PINKY_MCP]))
+    return spread / max(palm, 1e-3)
 
 
 def _drag_point(hand: HandPose) -> np.ndarray:
@@ -113,16 +141,21 @@ class FloatCube:
         self.size = 0.0  # 边长(px)
         self.rot = np.eye(3, dtype=np.float32)  # 立方体局部系 → 相机系
         self._spin = np.zeros(3, np.float32)  # 当前角速度(轴×角, rad/帧)
+        self._vel = np.zeros(2, np.float32)  # 平移速度(px/帧); 松手带走 → 滑行/反弹
+        self._zoom = 0.0  # 缩放速率(倍/帧 − 1); 松手带走, 快收敛
         # 下面三份跨帧状态都按 track_id 记, 不按列表下标: 两只手在 hands[] 里的
         # 先后顺序会随检测结果对调, 用下标存会把左手的拖动基准接到右手上, 一帧
         # 蹦出个几百 px 的假增量。
         self._pinch: dict[int, bool] = {}  # 每只手的捏合滞回状态
+        self._grabbing: dict[int, bool] = {}  # 每只手"抓住盒子没"(捏合∧建立时在盒上)
         self._grab: tuple[int, np.ndarray] | None = None  # 单手拖动: (手, 上帧捏合点)
         self._two: tuple[frozenset[int], np.ndarray, float] | None = None  # 双手: (手对, 中点, 距离)
         self._hold = 0  # 双手模式的剩余宽限帧
         # 下面两个是给 renderer 画反馈用的只读状态 —— 本模块自己不碰画布
         self.mode = MODE_IDLE
-        self.marks: list[tuple[np.ndarray, bool]] = []  # (掌心, 这只手捏住了没)
+        self.marks: list[tuple[np.ndarray, bool]] = []  # (掌心, 这只手抓住盒子没)
+        self.explode = 0.0  # 炸开程度 0..1(张开手→1); renderer 只读
+        self.ripples: list[tuple[np.ndarray, int]] = []  # (捏点, 已存活帧数); 只读
         self.debug = ""
 
     def reset(self) -> None:
@@ -131,7 +164,12 @@ class FloatCube:
         self._two = None
         self._hold = 0
         self._spin[:] = 0.0
+        self._vel[:] = 0.0
+        self._zoom = 0.0
+        self.explode = 0.0
+        self.ripples.clear()
         self._pinch.clear()
+        self._grabbing.clear()
 
     @staticmethod
     def _key(index: int, hand: HandPose) -> int:
@@ -158,8 +196,36 @@ class FloatCube:
         keys = [self._key(i, hd) for i, hd in enumerate(use)]
         pins = self._pinching(keys, [_pinch_ratio(hd) for hd in use])
         pts = [_drag_point(hd) for hd in use]
-        n = sum(pins)
-        self.marks = list(zip(pts, pins, strict=True))
+
+        # 抓取 = 捏合 ∧ 捏点落在盒子上(只在建立时判定, 见 GRAB_RADIUS)。
+        # 为什么必须加位置条件: 捏合判据是拇指尖/食指尖的 2D **投影**距离,
+        # 手朝镜头伸过去"触碰"时指尖投影天然挤在一起 → 误判捏合 —— 双手一伸
+        # 就进 move, 盒子跟着乱跑。捏在空气里现在不控制任何东西。
+        # 涟漪 = 抓取**建立**的回执(捏空气没有), 顺手在同一处记录。
+        self.ripples = [(rp, ra + 1) for rp, ra in self.ripples if ra + 1 <= RIPPLE_LIFE]
+        r_grab = self.size * GRAB_RADIUS
+        grabs: list[bool] = []
+        for hd, k2, pin2 in zip(use, keys, pins, strict=True):
+            held = pin2 and self._grabbing.get(k2, False)
+            if pin2 and not held:
+                cpt = pinch(hd)[2]
+                if float(np.linalg.norm(cpt - self.pos)) <= r_grab:
+                    held = True
+                    self.ripples.append((cpt, 0))
+            grabs.append(held)
+            self._grabbing[k2] = held
+        for gone in set(self._grabbing) - set(keys):  # 手离场就忘掉它
+            del self._grabbing[gone]
+        n = sum(grabs)
+        self.marks = list(zip(pts, grabs, strict=True))
+
+        # 炸开驱动: 未**捏合**的手里最大的张开度(捏着的手在忙, 抓没抓着都不算)。
+        spread = max(
+            (_spread_ratio(hd) for hd, pin2 in zip(use, pins, strict=True) if not pin2),
+            default=0.0,
+        )
+        target_ex = float(np.clip((spread - EXPLODE_LO) / (EXPLODE_HI - EXPLODE_LO), 0.0, 1.0))
+        self.explode += (target_ex - self.explode) * EXPLODE_RESP
 
         if n >= 2:  # ---- 双手: 平移 + 缩放 ----
             self._grab = None
@@ -168,8 +234,11 @@ class FloatCube:
             dist = float(np.linalg.norm(pts[1] - pts[0]))
             if self._two is not None and self._two[0] == pair:  # 换了一双手就重新起算
                 _, pmid, pdist = self._two
-                self.pos += mid - pmid  # 1:1: 两手中点走多远, 立方体走多远
+                step = mid - pmid
+                self.pos += step  # 1:1: 两手中点走多远, 立方体走多远
+                self._vel = self._vel * 0.5 + step * 0.5  # 速度估计; 松手带走成惯性
                 if pdist > 1e-3:
+                    self._zoom = self._zoom * 0.5 + (dist / pdist - 1.0) * 0.5
                     self.size = float(
                         np.clip(
                             self.size * (dist / pdist),  # 1:1: 两手拉开多少倍, 它就大多少倍
@@ -190,9 +259,11 @@ class FloatCube:
             self._two = None  # 手回来时重新起算基线, 免得攒出一次跳变
             self._spin *= GRIP_DAMP
             self.mode = MODE_MOVE
-        elif n == 1:  # ---- 单手: 拖动 = 转动 ----
+        elif n == 1:  # ---- 单手抓住: 拖动 = 转动 ----
             self._two = None
-            i = pins.index(True)
+            self._vel *= GRIP_DAMP  # 被捏住: 平移/缩放动量被手吸收
+            self._zoom *= GRIP_DAMP
+            i = grabs.index(True)
             p, k = pts[i], keys[i]
             if self._grab is not None and self._grab[0] == k:  # 换手就重新起算
                 d = p - self._grab[1]
@@ -215,10 +286,34 @@ class FloatCube:
             self._grab = None
             self._two = None
             self._spin *= SPIN_DAMP
-            n = float(np.linalg.norm(self._spin))
-            if n > CARRY_MAX_RAD:  # 松手滑一下可以, 乱飞不行
-                self._spin *= CARRY_MAX_RAD / n
+            sn = float(np.linalg.norm(self._spin))
+            if sn > CARRY_MAX_RAD:  # 松手滑一下可以, 乱飞不行
+                self._spin *= CARRY_MAX_RAD / sn
             self._spin[1] += self.drift * (1.0 - SPIN_DAMP)  # 稳态收敛到 drift
+            # 平移动量: 滑行 + 碰壁反弹(越界分量反号×BOUNCE, 位置钳回画面)
+            v = float(np.linalg.norm(self._vel))
+            if v > MOVE_CARRY_MAX:  # 误检瞬移的速度不带走
+                self._vel *= MOVE_CARRY_MAX / v
+                v = MOVE_CARRY_MAX
+            if v > 0.05:
+                self.pos += self._vel
+                m = self.size * 0.5
+                for ax, limit in ((0, w), (1, h)):
+                    if self.pos[ax] < m or self.pos[ax] > limit - m:
+                        self._vel[ax] = -self._vel[ax] * BOUNCE
+                self.pos = np.clip(self.pos, (m, m), (w - m, h - m)).astype(np.float32)
+                self._vel *= MOVE_DAMP
+            # 缩放动量: 同款但短命 —— 尺寸是指数量, 拖长会滚雪球
+            z = float(np.clip(self._zoom, -ZOOM_CARRY_MAX, ZOOM_CARRY_MAX))
+            if abs(z) > 1e-4:
+                self.size = float(
+                    np.clip(
+                        self.size * (1.0 + z),
+                        CUBE_SIZE_MIN * min(h, w),
+                        CUBE_SIZE_MAX * min(h, w),
+                    )
+                )
+                self._zoom *= ZOOM_DAMP
             self.mode = MODE_IDLE
 
         ang = float(np.linalg.norm(self._spin))
@@ -227,7 +322,9 @@ class FloatCube:
             # 累积浮点误差会让 rot 慢慢不正交(立方体会被剪切), 用 SVD 拉回来
             u, _s, vt = np.linalg.svd(self.rot)
             self.rot = (u @ vt).astype(np.float32)
-        self.debug = f"边长{self.size:4.0f} 捏住{n}只手"
+        # HUD 用 cv2.putText(Hershey 字体), **只认 ASCII** —— 中文会画成 "??"。
+        # glassbox.debug 一直守着这个约定, 这里曾破戒("边长/捏住"上屏全是问号)。
+        self.debug = f"size{self.size:4.0f} grip{n} open{spread:.2f}"
 
     def project(self, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, float]:
         """→ (屏幕 8 顶点, 相机系 8 顶点, 焦距). 顶点序与 effects.BOX_FACES 一致."""

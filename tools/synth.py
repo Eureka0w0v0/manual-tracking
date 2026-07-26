@@ -47,13 +47,17 @@ PALM = 160.0  # 掌宽 |MCP5−MCP17| 的像素尺度
 # landmark → 相对手中心的偏移(掌宽的倍数)。掌根那六个点是 cube_check 一路用下来
 # 的原始布局, 不要动 —— 动了 palm_center 就变, 它那些"手走 300px 立方体走 300px"
 # 的断言数值会跟着漂。指节是按真实手比例补的, 只影响 grip()/orient() 这类量。
-_LAYOUT: dict[int, tuple[float, float]] = {
+# 掌根六点(palm_center / 掌宽由它们决定, spread 不碰):
+_PALM_LAYOUT: dict[int, tuple[float, float]] = {
     WRIST: (0.0, 0.9),
     THUMB_CMC: (-0.55, 0.7),
     INDEX_MCP: (-0.5, 0.0),
     MIDDLE_MCP: (-0.15, -0.05),
     RING_MCP: (0.18, 0.0),
     PINKY_MCP: (0.5, 0.1),
+}
+# 指部 13 点(spread 缩放它们相对手中心的偏移 = 张开/握拳):
+_FINGER_LAYOUT: dict[int, tuple[float, float]] = {
     # 拇指: 从 CMC 斜着往外上方伸
     THUMB_MCP: (-0.78, 0.42),
     THUMB_IP: (-0.92, 0.16),
@@ -80,14 +84,22 @@ def hand(
     tid: int = 0,
     handedness: str = "Right",
     palm: float = PALM,
+    spread: float = 1.0,
 ) -> HandPose:
-    """一只合成手: 整体刚性平移, 捏合时拇指尖贴到食指尖, 松开时拉开 0.9 掌宽."""
+    """一只合成手: 整体刚性平移, 捏合时拇指尖贴到食指尖, 松开时拉开 0.9 掌宽.
+
+    spread 缩放**指部**相对手中心的偏移(掌根/掌宽不动): 1.0 = 半开(历史姿态,
+    既有断言全部建立在它上面), 2.0 = 五指张开(指弧/掌宽比 ≈ 1.13, 过
+    EXPLODE_HI), 0.5 = 握拳(比值 ≈ 0.28)。
+    """
     p = np.zeros((21, 3), np.float32)
-    for lm, (fx, fy) in _LAYOUT.items():
+    for lm, (fx, fy) in _PALM_LAYOUT.items():
         p[lm] = (cx + palm * fx, cy + palm * fy, 0.0)
-    p[INDEX_TIP] = (cx, cy - palm * 0.6, 0.0)
+    for lm, (fx, fy) in _FINGER_LAYOUT.items():
+        p[lm] = (cx + palm * fx * spread, cy + palm * fy * spread, 0.0)
+    p[INDEX_TIP] = (cx, cy - palm * 0.6 * spread, 0.0)
     off = 0.0 if pinch else palm * 0.9
-    p[THUMB_TIP] = (cx - off, cy - palm * 0.6, 0.0)
+    p[THUMB_TIP] = (cx - off, cy - palm * 0.6 * spread, 0.0)
     return HandPose(handedness=handedness, score=1.0, points=p, track_id=tid)
 
 

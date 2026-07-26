@@ -198,7 +198,7 @@ def _draw_hud(
         cv2.circle(out, (out.shape[1] - 24, 16), HUD_REC_DOT, (0, 0, 255), -1)
 
 
-def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
+def _open_camera(camera: int, width: int, height: int, fps: int = 0) -> cv2.VideoCapture:
     backends = []
     if hasattr(cv2, "CAP_AVFOUNDATION"):
         backends.append(cv2.CAP_AVFOUNDATION)
@@ -213,7 +213,9 @@ def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
                 if ok and frame is not None:
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                    cap.set(cv2.CAP_PROP_FPS, 30)
+                    # fps 是**请求值**, 设备按能力/光线自行决定实际值(低光会自动
+                    # 降帧)。0 = 沿用 30 的历史默认; 实际值开机横幅里打出来。
+                    cap.set(cv2.CAP_PROP_FPS, fps if fps > 0 else 30)
                     return cap
             time.sleep(0.15)
         last_err = f"backend={backend}"
@@ -377,6 +379,7 @@ def run_live(
     mirror: bool = True,
     width: int = 1920,
     height: int = 1080,
+    fps: int = 0,
     infer_size: int = 0,
     window_scale: float = 1.0,
     record: str | Path | None = None,
@@ -407,12 +410,13 @@ def run_live(
         min_tracking_confidence=0.45,
     )
     try:
-        cap = _open_camera(camera, width, height)
+        cap = _open_camera(camera, width, height, fps)
     except Exception:
         tracker.close()
         raise
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height)
+    actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
 
     # 可缩放窗口: 默认 AUTOSIZE 会把窗口钉死在采集分辨率上, Retina 屏(3456x2234)
     # 下一个 1280x720 的窗口很小。WINDOW_NORMAL 允许拖拽边角任意放大, 初始尺寸
@@ -428,12 +432,16 @@ def run_live(
     print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅")
     print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
     infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
-    print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_txt}")
+    fps_txt = f"{actual_fps:.0f}" if actual_fps > 0 else "?"
+    print(
+        f"  采集 {actual_w}x{actual_h} (req {width}x{height})"
+        f"  帧率 {fps_txt} (req {fps if fps > 0 else 30})  推理边 {infer_txt}"
+    )
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
     print("  Q退出 | S风格 | D暗底 | R录制")
     print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限")
     print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线")
-    print("  cube  操作: 单手捏住拖=转 | 双手捏住=移动+缩放 | X 归位 | 9 0 拖动灵敏度")
+    print("  cube  操作: 捏在盒上拖=转 | 双手捏在盒上=移动+缩放 | 张开手=炸开 | X 归位")
     print("  通用调参: g h 通透  o p 底亮度")
     print("=" * 56)
 

@@ -36,7 +36,7 @@ import random
 import cv2
 import numpy as np
 
-from .floatcube import FloatCube
+from .floatcube import EXPLODE_DIST, RIPPLE_LIFE, FloatCube
 from .glassbox import MIN_SPAN_PX, GlassBox
 from .handgeom import orient, palm_center, pinch
 from .effects import (
@@ -77,6 +77,23 @@ FRINGE_WARM = (40, 150, 255)  # 描边色差晕: 亮侧橙
 FRINGE_COOL = (235, 225, 90)  # 描边色差晕: 暗侧青
 
 TIP_IDS = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
+
+# ---- 光照 / 拖影 / 涟漪 / 霓虹 (新效果 tunables) ----
+# 虚拟光源方向(相机系: x 右, y 上, z 朝观察者), 左上前方 —— 转动时面的明暗
+# 随朝向流动, 立体感来自这里。SHADE_MIN 是背光面的亮度地板: 六个面各有像素
+# 处理, 压得太黑会吃掉暗部效果(点云/硬阈值), 0.72 实测质感和可读性都在。
+_LIGHT = np.array([-0.35, 0.55, 0.75], np.float32)
+_LIGHT /= float(np.linalg.norm(_LIGHT))
+SHADE_MIN = 0.72
+NEON_GLOW = (255, 160, 40)  # wire 霓虹: 辉光层(电青蓝 BGR)
+NEON_CORE = (255, 240, 210)  # wire 霓虹: 芯线(近白偏青)
+NEON_FLOW = 0.06  # 流动光点的相位步进(/帧); 一根骨头 ~0.5s 走完
+# 立方体局部角点(边长 1), 顶点序与 FloatCube.project / BOX_FACES 一致 ——
+# 炸开视图把每面的 4 个角沿面法线推离体心后独立投影。
+_CORNERS = np.array(
+    [[x, u, w] for x in (-0.5, 0.5) for u in (-0.5, 0.5) for w in (0.5, -0.5)],
+    np.float32,
+)
 
 # ---- 风格注册表(唯一权威; live/__main__ 从这里导入, 不要手抄) ----
 STYLES = ("mirror", "screen", "cube", "banner", "wire")
@@ -190,51 +207,69 @@ def _fill(
     fx: FaceEffect,
     shift: tuple[float, float] = (0.0, 0.0),
     alpha: float = 1.0,
+    shade: float = 1.0,
 ) -> None:
     """把 poly 围出的区域填成 fx(背景窗口(uv+shift)) —— 三种风格唯一的上色出口.
 
     早先有 _cmap_fill / _fx_fill / _mirror_fill 三个函数, 骨架逐字相同、只有
     "怎么把 src 变成颜色"那一行不同。现在那一行外提成 FaceEffect, 三合一。
 
-    alpha<1 时与画布已有内容混合 —— 玻璃盒靠它拿到"透"的质感: 背后的实拍
-    画面(以及先画的那个面)会隐约透出来, 而不是一块不透明贴纸。
+    alpha<1 时与画布已有内容混合 —— 玻璃盒靠它拿到"透"的质感; shade<1 时
+    整面压暗 —— 环境光照(Lambert)从这里进, 亮度是乘法, 透明度是混合, 两个
+    通道互不污染。
     """
     got = _poly_window(canvas, frame_bgr, poly, shift)
     if got is None:
         return
     roi, src, mask, _ = got
     out = np.ascontiguousarray(fx(src))
+    if shade < 0.999:
+        cv2.convertScaleAbs(out, dst=out, alpha=shade)
     if alpha < 1.0:
         out = cv2.addWeighted(out, alpha, roi, 1.0 - alpha, 0.0)
     cv2.copyTo(out, mask, roi)
 
 
-def _split_faces(cam: np.ndarray, focal: float) -> tuple[list[Face], list[Face]]:
-    """可见面 / 背向面(内壁), 各自按深度由远及近排序.
+def _shade_of(n: np.ndarray) -> float:
+    """Lambert 光照系数: 法线越朝向 _LIGHT 越亮, 背光压到 SHADE_MIN."""
+    nn = n / max(float(np.linalg.norm(n)), 1e-6)
+    return SHADE_MIN + (1.0 - SHADE_MIN) * max(0.0, float(nn @ _LIGHT))
+
+
+def _split_faces(
+    cam: np.ndarray, focal: float
+) -> tuple[list[tuple[Face, float]], list[tuple[Face, float]]]:
+    """(可见面, 光照) / (背向面, 光照), 各自按深度由远及近排序.
 
     面可见性 = 外法线朝向视点(凸体, 物理正确, 不是 2D 绕序启发式); 外法线用
     "面心 − 体心"定向, 免去手工排 CCW 的符号坑。由远及近画: 先内壁再正向面,
-    玻璃的"透"就来自这个顺序(凸体 + 背面剔除下正向面互不重叠, 排序只是让
-    绘制顺序确定)。screen 与 cube 共用 —— 早先是两份手抄, 元组结构已经开始
-    漂移(一份带面下标一份不带), 改一半的坑就是这么长出来的。
+    玻璃的"透"就来自这个顺序。光照(Lambert)也在这里算 —— 法线反正已经在手上。
+    screen 与 cube 共用; 早先是两份手抄, 元组结构已经开始漂移。
     """
     eye = np.array([0.0, 0.0, focal], np.float32)
     center = cam.mean(axis=0)
-    front: list[tuple[float, Face]] = []
-    back: list[tuple[float, Face]] = []
+    front: list[tuple[float, Face, float]] = []
+    back: list[tuple[float, Face, float]] = []
     for face in BOX_FACES:
         q = cam[list(face.verts)]
         n = np.cross(q[1] - q[0], q[2] - q[0])
         fc = q.mean(axis=0)
         if float(n @ (fc - center)) < 0.0:
             n = -n
-        (front if float(n @ (eye - fc)) > 0.0 else back).append((float(fc[2]), face))
+        row = (float(fc[2]), face, _shade_of(n))
+        (front if float(n @ (eye - fc)) > 0.0 else back).append(row)
     front.sort(key=lambda v: v[0])
     back.sort(key=lambda v: v[0])
-    return [f for _, f in front], [f for _, f in back]
+    return [(f, s) for _, f, s in front], [(f, s) for _, f, s in back]
 
 
-def _stroke_edges(canvas: np.ndarray, scr: np.ndarray, faces: list[Face], width: int) -> None:
+def _stroke_edges(
+    canvas: np.ndarray,
+    scr: np.ndarray,
+    faces: list[Face],
+    width: int,
+    color: tuple[int, int, int] = EDGE,
+) -> None:
     """描一组面的棱, 相邻面共享的棱只画一次."""
     drawn: set[tuple[int, int]] = set()
     for face in faces:
@@ -243,7 +278,7 @@ def _stroke_edges(canvas: np.ndarray, scr: np.ndarray, faces: list[Face], width:
             e = (a, b) if a < b else (b, a)
             if e not in drawn:
                 drawn.add(e)
-                _edge_line(canvas, scr[a], scr[b], width=width)
+                _edge_line(canvas, scr[a], scr[b], color, width)
 
 
 class VectorOverlayRenderer:
@@ -333,7 +368,11 @@ class VectorOverlayRenderer:
             self._reset_state()
 
         for i, h in enumerate(hands):
-            self._skeleton(out, h, i)
+            if self.style == "wire":
+                # wire 不再是调试骨架: 霓虹电流(辉光 + 芯线 + 流动光点)
+                self._skeleton_neon(out, h, frame_hands.index)
+            else:
+                self._skeleton(out, h, i)
         return out
 
     def _skeleton(self, canvas: np.ndarray, hand: HandPose, index: int = 0) -> None:
@@ -349,6 +388,39 @@ class VectorOverlayRenderer:
             r = 4 if i in TIP_IDS else 3
             cv2.circle(canvas, (x, y), r, WHITE_HOT, -1, cv2.LINE_AA)
             cv2.circle(canvas, (x, y), r, color, 1, cv2.LINE_AA)
+
+    def _skeleton_neon(self, canvas: np.ndarray, hand: HandPose, phase: int) -> None:
+        """wire 风格: 霓虹电流骨架 —— 辉光层 + 芯线 + 沿骨骼流动的光点.
+
+        辉光 = 粗线画进黑图层 → 高斯模糊 → **加法**混合回画布(自发光, 不是
+        覆盖)。模糊只在手部 bbox 里做, 1080p 全幅模糊是 ~8ms, bbox 是 ~0.3ms。
+        """
+        pts = hand.as_int()
+        h, w = canvas.shape[:2]
+        x0 = max(int(pts[:, 0].min()) - 48, 0)
+        y0 = max(int(pts[:, 1].min()) - 48, 0)
+        x1 = min(int(pts[:, 0].max()) + 48, w)
+        y1 = min(int(pts[:, 1].max()) + 48, h)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            return
+        roi = canvas[y0:y1, x0:x1]
+        glow = np.zeros_like(roi)
+        lp = pts - (x0, y0)
+        for a, b in CONNECTIONS:
+            cv2.line(glow, tuple(lp[a]), tuple(lp[b]), NEON_GLOW, 5, cv2.LINE_AA)
+        cv2.GaussianBlur(glow, (0, 0), 6, dst=glow)
+        cv2.add(roi, glow, dst=roi)
+        for a, b in CONNECTIONS:
+            cv2.line(canvas, tuple(pts[a]), tuple(pts[b]), NEON_CORE, 2, cv2.LINE_AA)
+        # 流动光点: 每根骨头一个, 相位错开 —— "电流"在骨架里跑
+        for k, (a, b) in enumerate(CONNECTIONS):
+            t = (phase * NEON_FLOW + k * 0.37) % 1.0
+            p = pts[a] + (pts[b] - pts[a]).astype(np.float32) * t
+            c = (int(p[0]), int(p[1]))
+            cv2.circle(canvas, c, 4, NEON_GLOW, -1, cv2.LINE_AA)
+            cv2.circle(canvas, c, 2, WHITE_HOT, -1, cv2.LINE_AA)
+        for tid in TIP_IDS:
+            cv2.circle(canvas, (int(pts[tid, 0]), int(pts[tid, 1])), 3, WHITE_HOT, -1, cv2.LINE_AA)
 
     def _ordered(self, hands: list[HandPose]) -> tuple[HandPose, HandPose]:
         """画面左手/右手, 带 25px 滞回——双手并拢时角色不逐帧翻转.
@@ -436,39 +508,77 @@ class VectorOverlayRenderer:
         vis, hid = _split_faces(cam, focal)
         # HUD 用: 当前哪些面朝着镜头。调 roll 时靠它区分"几何没转到"和
         # "画了但读不出来"(红背 LUT 在暗底上是全场最暗的一块, 很容易漏看)
-        self.box.debug += "  " + ("+".join(f.tag for f in vis) or "-")
+        self.box.debug += "  " + ("+".join(f.tag for f, _ in vis) or "-")
 
         if not vis:  # 盒高恰好为 0: 所有面零面积, 兜底描一条侧视细线
             _edge_line(canvas, scr[0], scr[4], width=max(self.box_edge_w, 1))
             return
 
         for layer, alpha in ((hid, self.back_alpha), (vis, self.face_alpha)):
-            for face in layer:
+            for face, shade in layer:
                 quad = scr[list(face.verts)]
                 shift = (0.0, BOX_SAMPLE_K * length) if face.is_top else (0.0, 0.0)
-                _fill(canvas, frame_bgr, quad, face.fx, shift, alpha)
+                _fill(canvas, frame_bgr, quad, face.fx, shift, alpha, shade)
                 if face.is_top and layer is vis:
                     self._glitch(canvas, frame_bgr, quad, seed)
 
         # 只描可见面的棱(背面的棱被实体挡住, 不该露)。宽度 0 = 无缝模式,
         # 直接跳过 —— cv2.line 收到 0 会当成 1px 画出来。
         if self.box_edge_w > 0:
-            _stroke_edges(canvas, scr, vis, self.box_edge_w)
+            _stroke_edges(canvas, scr, [f for f, _ in vis], self.box_edge_w)
 
     def _draw_cube(self, canvas: np.ndarray, frame_bgr: np.ndarray, seed: int) -> None:
-        """悬浮立方体: 位姿来自 FloatCube, 六个面复用 effects.BOX_FACES."""
+        """悬浮立方体: 位姿来自 FloatCube; 张开手 → 炸开成六个悬浮面."""
         scr, cam, focal = self.cube.project(canvas.shape[:2])
+        ex = self.cube.explode
+        if ex >= 0.01:
+            self.cube.debug += "  explode"
+            self._draw_exploded(canvas, frame_bgr, seed, ex, focal)
+            self._cube_feedback(canvas)
+            return
         vis, hid = _split_faces(cam, focal)
-        self.cube.debug += "  " + ("+".join(f.tag for f in vis) or "-")
+        self.cube.debug += "  " + ("+".join(f.tag for f, _ in vis) or "-")
         for layer, alpha in ((hid, self.back_alpha), (vis, self.face_alpha)):
-            for face in layer:
+            for face, shade in layer:
                 quad = scr[list(face.verts)]
-                _fill(canvas, frame_bgr, quad, face.fx, (0.0, 0.0), alpha)
+                _fill(canvas, frame_bgr, quad, face.fx, (0.0, 0.0), alpha, shade)
                 if face.is_top and layer is vis:
                     self._glitch(canvas, frame_bgr, quad, seed)
         if self.box_edge_w > 0:
-            _stroke_edges(canvas, scr, vis, self.box_edge_w)
+            _stroke_edges(canvas, scr, [f for f, _ in vis], self.box_edge_w)
         self._cube_feedback(canvas)
+
+    def _draw_exploded(
+        self, canvas: np.ndarray, frame_bgr: np.ndarray, seed: int, ex: float, focal: float
+    ) -> None:
+        """炸开视图: 六个面沿各自外法线飞离体心, 独立投影成悬浮薄片.
+
+        这是唯一能同时看全六种像素处理的姿态。薄片没有"实体遮挡"概念:
+        全部都画, 朝前的用 face_alpha, 朝后的(能看到"背面"的薄片)用
+        back_alpha —— 读作一片悬浮的玻璃阵。
+        """
+        cube = self.cube
+        size = cube.size
+        dist = ex * size * EXPLODE_DIST
+        eye = np.array([0.0, 0.0, focal], np.float32)
+        layers: list[tuple[float, Face, np.ndarray, bool, float]] = []
+        for face in BOX_FACES:
+            ql = _CORNERS[list(face.verts)] * size
+            fc = ql.mean(axis=0)
+            n_local = fc / max(float(np.linalg.norm(fc)), 1e-6)
+            p3 = (ql + n_local * dist) @ cube.rot.T  # 每行 rot@v
+            fc3 = p3.mean(axis=0)
+            n3 = cube.rot @ n_local
+            is_front = float(n3 @ (eye - fc3)) > 0.0
+            shade = _shade_of(np.array([n3[0], -n3[1], n3[2]], np.float32))
+            scr4 = cube.pos + p3[:, :2] * (focal / (focal - p3[:, 2]))[:, None]
+            layers.append((float(fc3[2]), face, scr4.astype(np.float32), is_front, shade))
+        layers.sort(key=lambda v: v[0])  # 由远及近
+        for _, face, scr4, is_front, shade in layers:
+            alpha = self.face_alpha if is_front else self.back_alpha
+            _fill(canvas, frame_bgr, scr4, face.fx, (0.0, 0.0), alpha, shade)
+            if face.is_top and is_front:
+                self._glitch(canvas, frame_bgr, scr4, seed)
 
     def _cube_feedback(self, canvas: np.ndarray) -> None:
         """把"我抓住它了没有"画在手上 —— 只有状态, 没有文字教程."""
@@ -482,6 +592,14 @@ class VectorOverlayRenderer:
                 for k in range(0, 360, 30):
                     a = np.radians(k)
                     cv2.circle(canvas, (int(c[0] + 16 * np.cos(a)), int(c[1] + 16 * np.sin(a))), 1, CUBE_IDLE, -1)
+        # 抓握涟漪: 捏合成立的那一瞬从捏点炸开一圈, 给"抓住了"一个确定的回执
+        for pt, age in cube.ripples:
+            t = age / RIPPLE_LIFE
+            fade = 1.0 - t
+            col = tuple(int(c * fade) for c in CUBE_GRIP)
+            cv2.circle(
+                canvas, (int(pt[0]), int(pt[1])), int(12 + 26 * t), col, 2, cv2.LINE_AA
+            )
 
     def _glitch(self, canvas: np.ndarray, frame_bgr: np.ndarray, top: np.ndarray, seed: int) -> None:
         """蓝顶面横条故障: 水平位移的原色背景条(不染蓝)."""

@@ -20,6 +20,7 @@ from manual_tracking.floatcube import (  # noqa: E402
     CUBE_SIZE_MAX,
     CUBE_SIZE_MIN,
     ORBIT_GAIN,
+    RIPPLE_LIFE,
     TURN_MAX_RAD,
     TURN_RESP,
     FloatCube,
@@ -69,10 +70,12 @@ def main() -> int:
         c = FloatCube()
         seq = []
         for i in range(400):
-            d = 200.0 + (i * 9) % 900
+            step = (i * 9) % 900
             lifted = i > 0 and i % 100 == 0  # 拖到边抬手一帧回起点(增量归零, 不算瞬移)
             pin = not lifted
-            c.update([hand(d, 400, pinch=pin) if axis == "横拖" else hand(640, d, pinch=pin)], SHAPE)
+            # 序列从盒子上出发: 抓取要求捏点落在盒上建立(GRAB_RADIUS)
+            hd = hand(640 + step, 400, pinch=pin) if axis == "横拖" else hand(640, 456 + step, pinch=pin)
+            c.update([hd], SHAPE)
             t = visible(c)
             if not seq or seq[-1] != t:
                 seq.append(t)
@@ -86,7 +89,7 @@ def main() -> int:
     # 2) 长时间跑下来旋转矩阵要保持正交(否则立方体会被剪切成平行六面体)
     c = FloatCube()
     for i in range(10000):
-        c.update([hand(300 + (i * 7) % 600, 400, pinch=True)], SHAPE)
+        c.update([hand(640 + (i * 7) % 600, 456, pinch=True)], SHAPE)
     err = float(np.abs(c.rot.T @ c.rot - np.eye(3)).max())
     good &= check("旋转矩阵 10000 帧后仍正交", err < 1e-4, f"max|RᵀR−I| = {err:.2e}")
 
@@ -123,32 +126,32 @@ def main() -> int:
 
     # 5) 平移/缩放必须 1:1 —— 手走多远它走多远, 不许打折(哥哥嫌慢的就是这个)
     c = FloatCube()
-    c.update(pair2(500), SHAPE)  # 建立基线
+    c.update(pair2(640, half=100), SHAPE)  # 捏在盒上 → 抓取建立 + 基线
     p0 = c.pos.copy()
     for i in range(1, 31):
-        c.update(pair2(500 + i * 10), SHAPE)  # 两手一起右移 300px
+        c.update(pair2(640 + i * 10, half=100), SHAPE)  # 两手一起右移 300px
     moved = float(c.pos[0] - p0[0])
     c2 = FloatCube()
-    c2.update(pair2(640, half=150), SHAPE)
+    c2.update(pair2(640, half=100), SHAPE)
     s0 = c2.size
-    c2.update(pair2(640, half=300), SHAPE)  # 两手拉开一倍
+    c2.update(pair2(640, half=200), SHAPE)  # 拉开一倍: 手已出抓取半径, 但建立过就不脱手
     good &= check(
         "平移/缩放 1:1 跟手",
         abs(moved - 300) < 1.0 and abs(c2.size / s0 - 2.0) < 0.01,
-        f"手走 300px 立方体走 {moved:.1f}px; 两手拉开 2.0x 边长变 {c2.size/s0:.2f}x",
+        f"手走 300px 立方体走 {moved:.1f}px; 拉出半径仍不脱手, 边长变 {c2.size/s0:.2f}x",
     )
 
     # 6) 双手平移: 立方体不会被推出画面
     c = FloatCube()
+    c.update(pair2(640, half=100), SHAPE)  # 抓住
     for i in range(300):
-        cx = 640 + i * 20
-        c.update([hand(cx - 200, 400, pinch=True, tid=0), hand(cx + 200, 400, pinch=True, tid=1)], SHAPE)
+        c.update(pair2(640 + i * 20, half=100), SHAPE)
     inside = 0 <= c.pos[0] <= SHAPE[1] and 0 <= c.pos[1] <= SHAPE[0]
     good &= check("平移被夹在画面内", inside, f"pos = ({c.pos[0]:.0f}, {c.pos[1]:.0f})")
 
     # 7) 两只手在 hands[] 里对调顺序, 不该产生假的拖动增量
     c = FloatCube()
-    a, b = hand(400, 400, pinch=True, tid=0), hand(900, 400, pinch=False, tid=1)
+    a, b = hand(640, 456, pinch=True, tid=0), hand(1100, 400, pinch=False, tid=1)
     for i in range(10):
         c.update([a, b] if i % 2 == 0 else [b, a], SHAPE)
     spin = float(np.linalg.norm(c._spin))
@@ -157,12 +160,12 @@ def main() -> int:
     # 8) 两层限幅 × 惯性: 跳变目标被顶在 90°, 再被质量稀释成 90°×RESP 的角速度;
     #    真实手速一帧只吃 RESP 份, 持续拖 12 帧后必须收敛到全速(不然就是"拖不动")。
     c = FloatCube()
-    c.update([hand(100, 400, pinch=True)], SHAPE)
-    c.update([hand(1100, 400, pinch=True)], SHAPE)  # 一帧瞬移 1000px = 误检
+    c.update([hand(640, 456, pinch=True)], SHAPE)  # 在盒上抓住
+    c.update([hand(1640, 456, pinch=True)], SHAPE)  # 一帧瞬移 1000px = 误检
     capped = float(np.linalg.norm(c._spin))
     c2 = FloatCube()
     for i in range(13):
-        c2.update([hand(100 + i * 109, 400, pinch=True)], SHAPE)  # 持续 109px/帧 = 真手最快的 1%
+        c2.update([hand(640 + i * 109, 456, pinch=True)], SHAPE)  # 持续 109px/帧 = 真手最快的 1%
     steady = float(np.linalg.norm(c2._spin))
     good &= check(
         "跳变被质量稀释, 真手持续拖能到全速",
@@ -174,9 +177,9 @@ def main() -> int:
     # 9) 双手模式掉一帧(两手捏在一起会互相遮挡): 立方体该停住, 不该切去转动
     c = FloatCube()
     for i in range(20):
-        c.update(pair2(400 + i * 6), SHAPE)
+        c.update(pair2(640 + i * 6, half=100), SHAPE)
     rot_before, pos_before = c.rot.copy(), c.pos.copy()
-    c.update([hand(600, 400, pinch=True, tid=0)], SHAPE)  # 右手这帧没测到
+    c.update([hand(760, 400, pinch=True, tid=0)], SHAPE)  # 右手这帧没测到
     turned = rot_angle(rot_before, c.rot)
     good &= check(
         "双手掉一帧不乱转",
@@ -205,7 +208,7 @@ def main() -> int:
     def coast_after(px_per_frame: float, frames: int) -> float:
         c = FloatCube()
         for i in range(frames):
-            c.update([hand(100 + i * px_per_frame, 400, pinch=True)], SHAPE)
+            c.update([hand(640 + i * px_per_frame, 456, pinch=True)], SHAPE)
         r0 = c.rot.copy()
         for _ in range(60):
             c.update([], SHAPE)
@@ -222,10 +225,10 @@ def main() -> int:
     # 12) 捏停黏滞: 拖稳后手停住(仍捏着), 立方体要被手"黏"停 —— 5 帧内角速度掉到 10% 以下
     c = FloatCube()
     for i in range(10):
-        c.update([hand(100 + i * 30, 400, pinch=True)], SHAPE)
+        c.update([hand(640 + i * 30, 456, pinch=True)], SHAPE)
     w0 = float(np.linalg.norm(c._spin))
     for _ in range(5):
-        c.update([hand(100 + 9 * 30, 400, pinch=True)], SHAPE)  # 手定住
+        c.update([hand(640 + 9 * 30, 456, pinch=True)], SHAPE)  # 手定住
     w5 = float(np.linalg.norm(c._spin))
     good &= check(
         "捏停 5 帧内停稳",
@@ -236,10 +239,10 @@ def main() -> int:
     # 13) 双手抓住 = 锁转: 转起来的立方体被两只手一抓, 3 帧内旋转基本锁死
     c = FloatCube()
     for i in range(10):
-        c.update([hand(100 + i * 60, 400, pinch=True, tid=0)], SHAPE)
+        c.update([hand(640 + i * 60, 456, pinch=True, tid=0)], SHAPE)
     w0 = float(np.linalg.norm(c._spin))
     for _ in range(3):
-        c.update(pair2(640), SHAPE)
+        c.update(pair2(640, half=100, cy=456), SHAPE)
     w3 = float(np.linalg.norm(c._spin))
     good &= check(
         "双手抓住 3 帧锁转",
@@ -247,6 +250,88 @@ def main() -> int:
         f"单手拖出 ω {np.degrees(w0):.1f}°/帧, 双手一抓 3 帧后剩 {w3 / w0 * 100:.0f}%",
     )
 
+    # 14) 双手甩出去松手: 平移动量带走 → 摩擦滑行渐停(转动惯性的平移版)
+    c = FloatCube()
+    c.update(pair2(640, half=100), SHAPE)  # 抓住 + 基线
+    for i in range(1, 9):
+        c.update(pair2(640 - i * 30, half=100), SHAPE)  # 30px/帧 向左甩(朝画面中心, 不撞墙)
+    p0x = float(c.pos[0])
+    for _ in range(60):
+        c.update([], SHAPE)
+    slide = float(c.pos[0]) - p0x
+    good &= check(
+        "松手平移带惯性",
+        -350.0 <= slide <= -150.0,
+        f"30px/帧 甩出, 松手后滑 {slide:+.0f}px 渐停 (理论 −270)",
+    )
+
+    # 15) 碰壁反弹: 朝墙甩, 撞上后弹回来, 全程不出界
+    c = FloatCube()
+    c.update(pair2(640, half=100), SHAPE)  # 抓住 + 基线
+    for i in range(1, 11):
+        c.update(pair2(640 + i * 35, half=100), SHAPE)  # 35px/帧 向右猛推
+    mx = 0.0
+    for _ in range(90):
+        c.update([], SHAPE)
+        mx = max(mx, float(c.pos[0]))
+    wall = SHAPE[1] - c.size * 0.5
+    good &= check(
+        "碰壁反弹不出界",
+        mx <= wall + 1e-3 and mx >= wall - 2.0 and float(c.pos[0]) < wall - 25.0,
+        f"最远推到 {mx:.0f} (墙 {wall:.0f}), 弹回停在 {c.pos[0]:.0f}",
+    )
+
+    # 16) 炸开状态机: 张开的手 → 炸开; 握拳 → 合拢; 捏住的手不参与
+    c = FloatCube()
+    for _ in range(30):
+        c.update([hand(640, 400, pinch=False, spread=2.0)], SHAPE)
+    ex_open = c.explode
+    for _ in range(30):
+        c.update([hand(640, 400, pinch=False, spread=0.5)], SHAPE)
+    ex_fist = c.explode
+    c2 = FloatCube()
+    for _ in range(30):
+        c2.update([hand(640, 400, pinch=True, spread=2.0)], SHAPE)
+    good &= check(
+        "张手炸开 / 握拳合拢 / 捏住不炸",
+        ex_open > 0.9 and ex_fist < 0.05 and c2.explode < 0.05,
+        f"张开→{ex_open:.2f}, 握拳→{ex_fist:.2f}, 捏住张开→{c2.explode:.2f}",
+    )
+
+    # 17) 抓握涟漪: 捏合成立的一瞬出生(age 0), 活满 RIPPLE_LIFE 帧后消失
+    c = FloatCube()
+    c.update([hand(640, 456, pinch=False)], SHAPE)
+    c.update([hand(640, 456, pinch=True)], SHAPE)  # 在盒上捏合 → 抓取建立
+    born = len(c.ripples) == 1 and c.ripples[0][1] == 0
+    for _ in range(RIPPLE_LIFE + 1):
+        c.update([hand(640, 456, pinch=True)], SHAPE)  # 按住不放, 不再触发新涟漪
+    good &= check(
+        "抓握涟漪生灭",
+        born and len(c.ripples) == 0,
+        f"捏合瞬间 1 圈 age0, {RIPPLE_LIFE + 1} 帧后剩 {len(c.ripples)} 圈",
+    )
+
+    # 18) 抓取语义: 捏合判据是拇指/食指的 2D 投影距离, 手朝镜头一伸就会误判
+    #     成"捏住"(哥哥实拍复现: 双手一碰盒子就乱跑)。位置条件挡住它 ——
+    #     捏在空气里拖, 盒子必须纹丝不动(只剩 idle 的悠闲自转)。
+    c = FloatCube()
+    c.update([], SHAPE)  # 放置在画面中央
+    r0, p0 = c.rot.copy(), c.pos.copy()
+    for i in range(10):
+        c.update([hand(150 + i * 40, 620, pinch=True, tid=0)], SHAPE)  # 远处捏着拖
+    turned = rot_angle(r0, c.rot)
+    moved = float(np.linalg.norm(c.pos - p0))
+    good &= check(
+        "捏在空气里不控制",
+        turned < 5.0 and moved < 1e-3,
+        f"远处捏着拖 10 帧: 只转 {turned:.1f}° (纯 drift), 位移 {moved:.2f}px",
+    )
+
+    # 19) 抓握涟漪只发给"真抓住": 捏在空气里没有回执
+    c = FloatCube()
+    c.update([hand(200, 620, pinch=False)], SHAPE)
+    c.update([hand(200, 620, pinch=True)], SHAPE)  # 空气里捏合
+    good &= check("捏空气无涟漪", len(c.ripples) == 0, f"空捏后涟漪 {len(c.ripples)} 圈")
 
     print("\n" + ("全部通过" if good else "有不通过项"))
     return 0 if good else 1

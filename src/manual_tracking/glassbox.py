@@ -96,6 +96,9 @@ BOX_ANCHOR_RATE_SMOOTH = 0.5  # 锚点速度估计自身的 EMA
 # 0.55≈110px 差半个手掌。调大 = 手还没真碰上就收起, 手势更省力。
 GAP_SHUT = 0.35  # 最近距离 / 掌宽 低于它 → 收起
 GAP_HYST = 0.40  # 出现阈值比收起阈值高这么多; 拉开间距才防得住频闪
+# 收起/出现的过渡: 盒高(连带进深)乘 smoothstep(ease), ~0.17s 压扁/长出,
+# 不瞬间消失。出现动画顺带盖住冷启动时 EMA 的追赶(天然遮丑)。
+EASE_STEP = 0.2  # ease 每帧步长(0.2 → 5 帧 @30fps)
 
 
 class GlassBox:
@@ -115,7 +118,8 @@ class GlassBox:
         self._b0_prev: np.ndarray | None = None  # 上帧的截面"上"轴(符号帧间传播)
         self._anchor_prev: np.ndarray | None = None  # 上帧滤波后的两个锚点 (2,2)
         self._anchor_rate = 0.0  # 锚点速度估计(px/帧)
-        self._shut = False  # 双手是否已靠拢(滞回状态; 见 solve 里的 SPAN_*)
+        self._shut = False  # 双手是否已靠拢(滞回状态; 见 solve 里的 GAP_*)
+        self._ease = 0.0  # 收起(0)↔出现(1)的过渡进度
 
     def reset(self) -> None:
         """清跨帧状态(手离场/合拢/切风格). 下一帧当作冷启动.
@@ -127,6 +131,7 @@ class GlassBox:
         self._b0_prev = None
         self._anchor_prev = None
         self._anchor_rate = 0.0
+        self._ease = 0.0
         self.debug = ""
 
     def anchor(self, hand: HandPose) -> np.ndarray:
@@ -166,10 +171,16 @@ class GlassBox:
         gap_r = gap / max((pL + pR) * 0.5, 1e-3)
         # 出现阈值 = 收起阈值 + 固定间距, 这样实时调一个值滞回宽度不变
         self._shut = gap_r < (self.gap_shut + GAP_HYST if self._shut else self.gap_shut)
-        if self._shut:
-            keep = self._shut  # reset 会清滤波历史, 但滞回状态必须留着
-            self.reset()
-            self._shut = keep
+        # 收起/出现走一个 ~0.17s 的过渡(压扁/长出), 不瞬移; 动画走完才真正
+        # 清滤波历史并停画。
+        self._ease += float(
+            np.clip((0.0 if self._shut else 1.0) - self._ease, -EASE_STEP, EASE_STEP)
+        )
+        if self._ease <= 0.02:
+            if self._shut:
+                keep = self._shut  # reset 会清滤波历史, 但滞回状态必须留着
+                self.reset()
+                self._shut = keep
             return None
         t = self.anchor_lift  # 0=掌心(偏低) 1=指弧中点(原片高度)
         anc = np.stack([cL + (fL - cL) * t, cR + (fR - cR) * t])  # (2,2) 左右锚点
@@ -218,6 +229,10 @@ class GlassBox:
             cap = np.radians(self.roll_max_rate)  # 硬限幅: 挡掉 _orient 掀翻符号造成的弹飞
             psi = prev + float(np.clip(err * k, -cap, cap))
         self._ema = (height, psi, dzr)
+        # 收起/出现过渡: 只缩**画出来的**高度(进深随之), 不进 EMA —— 否则
+        # 过渡本身会污染滤波历史, 出现的前几帧被自己拖慢。
+        e = self._ease * self._ease * (3.0 - 2.0 * self._ease)  # smoothstep
+        height = height * e
         dz = dzr * span  # 比值 → 当帧像素
         self.debug = f"psi{np.degrees(psi):+5.0f} oL{oL:+.2f} oR{oR:+.2f} dz{dz:+4.0f}"
 

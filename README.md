@@ -5,7 +5,7 @@
 三种特效的颜色/几何参数全部来自对原视频的逐像素逆向测量（4 个分析代理的报告）：
 
 - **`mirror`**：折纸镜面（v1 前半）——角钉在拇指尖+食指尖；平摊单面、翻手拧麻花 X、捏死压成双瓣细线；面=反相镜面 `clamp(283−0.56×背景)`，折起面变冷灰
-- **`screen`**：彩色玻璃长方体（v1 后半）——**参数化刚体**：手不钉顶点，只给低噪参数（每手 掌心↔指弧中点插值 = 锚点 → 长轴与盒长；指弧展开量 → 盒高；掌宽比 → 长轴深度分量；掌面前缩 → 绕长轴 roll），长方体在 3D 里造好再弱透视投影，刚性和两点透视是构造出来的；面可见性用 3D 外法线；**双手靠拢 → 盒子收起，拉开 → 重新出现**（跨距/掌宽比值判据 + 滞回，与手离镜头远近无关）。**六个面六种像素处理**：
+- **`screen`**：彩色玻璃长方体（v1 后半）——**参数化刚体**：手不钉顶点，只给低噪参数（每手 掌心↔指弧中点插值 = 锚点 → 长轴与盒长；指弧展开量 → 盒高；掌宽比 → 长轴深度分量；掌面前缩 → 绕长轴 roll），长方体在 3D 里造好再弱透视投影，刚性和两点透视是构造出来的；面可见性用 3D 外法线 + Lambert 光照（转动时明暗随朝向流动）；**双手靠拢 → 盒子压扁收起，拉开 → 长出重现**（跨距/掌宽比值判据 + 滞回 + 0.17s 过渡，与手离镜头远近无关）。**六个面六种像素处理**：
 
   | 面 | 处理 | 来源 |
   |---|---|---|
@@ -21,13 +21,14 @@
 
   | 手势 | 作用 |
   |---|---|
-  | 单手捏住（拇指尖碰食指尖）拖动 | 转动：横拖绕竖轴、竖拖绕横轴 —— 用来翻面 |
-  | 双手同时捏住 | 平移（跟两手中点）+ 缩放（跟两手距离） |
-  | 松开 | 停在当前位姿，带一点惯性 |
+  | 单手**捏在立方体上**拖动 | 转动：横拖绕竖轴、竖拖绕横轴 —— 用来翻面。抓住的瞬间捏点炸开一圈**涟漪**（回执）；捏在空气里无效——抓取 = 捏合 ∧ 捏点落在盒上（建立后拖到哪都跟手，松开捏合才脱手） |
+  | 双手**都捏在立方体上** | 平移（跟两手中点）+ 缩放（跟两手距离；缩放会把手拉出盒外，建立过就不脱手） |
+  | **五指张开** | **炸开视图**：六个面沿各自法线飞离体心悬停——唯一能同时看全六种像素处理的姿态；握拳/放下手收拢 |
+  | 松开 | 带走动量：转动继续滑、平移继续漂、**碰到画面边缘会反弹**，摩擦渐停后回到悠闲自转 |
 
   转动驱动用的是**拖动增量**而不是手掌朝向，所以往一个方向一直拖能无限翻下去，不会像 `screen` 那样翻到某个面自己转回来（`screen` 受制于 `_orient` 的 cos 型饱和，见 `docs/GLASS_BOX_GEOMETRY.md` §6）。手感底线有自动断言：`python tools/cube_check.py`
 - **`banner`**：TouchDesigner 横幅（v2）——黄阈值头带 / X-ray 中窗 / 白分隔线 / 悬出红脚带，全部是摄像头画面的屏幕空间双色调
-- **`wire`**：纯骨架调试（`fabric`/`track`/`outline` 为旧名别名）
+- **`wire`**：霓虹电流骨架——辉光 + 芯线 + 沿骨骼流动的光点（`fabric`/`track`/`outline` 为旧名别名）
 
 可调参数按层分布：`mirror`/`banner` 的在 `renderer.py` 顶部 tunables 区，`screen`
 的盒子几何在 `glassbox.py`，`cube` 在 `floatcube.py`，每个面的像素处理参数在
@@ -36,7 +37,8 @@
 ```bash
 ./run.sh live                              # 默认 1920x1080，自动挑本机内置摄像头
 ./run.sh live --style screen               # 直接进玻璃盒
-./run.sh live --style cube                 # 悬浮立方体（捏住拖=翻面）
+./run.sh live --style cube                 # 悬浮立方体（捏住拖=翻面，张开手=炸开）
+./run.sh live --fps 60                     # 请求 60fps 采集（需摄像头支持，检测链路喂得饱）
 ./run.sh live --window-scale 1.4           # 窗口开大点（也可直接拖拽边角）
 # 或双击 start-live.command
 ```
@@ -82,8 +84,8 @@ HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check src tools tests                       # 静态检查（配置在 pyproject.toml）
-.venv/bin/pytest                                           # 纯逻辑契约，90 条，<1 秒
-PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，11 条断言
+.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，96 条，<1 秒
+PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，18 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数
 ```
@@ -97,7 +99,7 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 | 回归 | `tools/e2e_check.py` | 改差了不好用：颜色频闪、背面读不出 | 样片 + 模型 |
 
 改完 `screen` 的几何/映射/滤波必须跑 `e2e_check`：它是唯一能发现「可见面每秒切换
-5 次」这类体感灾难的手段——`tests/` 那 90 条全绿也照样看不见频闪。基线与结论见
+5 次」这类体感灾难的手段——`tests/` 那 96 条全绿也照样看不见频闪。基线与结论见
 [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md) §3.6–3.8。
 
 `tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手（21 个 landmark 全铺满：

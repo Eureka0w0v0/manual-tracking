@@ -82,6 +82,10 @@ def run(fr, cache, label, setup=None, fps=30.0):
         geo = r.box.solve(left, right)
         if geo is None:
             continue
+        if r.box._ease < 0.999:
+            # 收起/出现的过渡帧: 盒子在压扁/长出, 面组合本来就会变 ——
+            # 那是刻意的动画, 不是 ψ 频闪。状态已推进(solve 调过), 只跳指标。
+            continue
         scr, cam, focal, _ = geo
         ar = face_areas(scr, cam, focal)
         tot = sum(ar.values()) or 1.0

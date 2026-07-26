@@ -58,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--width", type=int, default=1920, help="采集宽 (默认 1920)")
     live.add_argument("--height", type=int, default=1080, help="采集高 (默认 1080)")
     live.add_argument(
+        "--fps",
+        type=int,
+        default=0,
+        help="请求摄像头帧率(0=默认30)。60 需摄像头支持; 检测中位 6.9ms, 60Hz 喂得饱",
+    )
+    live.add_argument(
         "--window-scale",
         type=float,
         default=1.0,
@@ -108,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             mirror=not args.no_mirror,
             width=args.width,
             height=args.height,
+            fps=args.fps,
             infer_size=args.infer_size,
             window_scale=args.window_scale,
             record=args.record,
