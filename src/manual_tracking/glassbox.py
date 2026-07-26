@@ -86,8 +86,10 @@ BOX_ANCHOR_RATE_SMOOTH = 0.5  # 锚点速度估计自身的 EMA
 # 反过来真贴上了却因为锚点没到阈值而不触发。最近距离直接对应"碰到"这件事。
 #
 # 按掌宽归一 → 与手离镜头远近无关(近处手大, 像素间距也大, 比值不变)。
-GAP_SHUT = 0.12  # 最近距离 / 掌宽 低于它 → 收起(≈ 指头挨上)
-GAP_OPEN = 0.45  # 高于它 → 重新出现; 与上面拉开间距才防得住频闪
+# 阈值的直观换算(掌宽 200px 时): 0.12≈24px 指头挨上 / 0.35≈70px 差一指多宽 /
+# 0.55≈110px 差半个手掌。调大 = 手还没真碰上就收起, 手势更省力。
+GAP_SHUT = 0.35  # 最近距离 / 掌宽 低于它 → 收起
+GAP_HYST = 0.40  # 出现阈值比收起阈值高这么多; 拉开间距才防得住频闪
 
 
 class GlassBox:
@@ -100,6 +102,7 @@ class GlassBox:
         self.roll_resp = BOX_ROLL_RESP  # live 9 0 : 旋转跟手程度
         self.roll_max_rate = BOX_ROLL_MAX_RATE  # live 7 8 : 角速度上限
         self.anchor_resp = BOX_ANCHOR_RESP  # live - = : 锚点跟手程度
+        self.gap_shut = GAP_SHUT  # live ( ) : 双手多近才收起(出现阈值跟着走)
         self.debug = ""  # HUD 用: 当前 ψ / 双手掌朝向 / 长轴深度
         self._ema: tuple[float, float, float] | None = None  # (盒高, ψ, 长轴深度比)
         self._psi_rate = 0.0  # ψ 的角速度估计(rad/帧), 驱动自适应滤波
@@ -155,7 +158,8 @@ class GlassBox:
         a, b = left.points[:, :2], right.points[:, :2]
         gap = float(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2).min())
         gap_r = gap / max((pL + pR) * 0.5, 1e-3)
-        self._shut = gap_r < (GAP_OPEN if self._shut else GAP_SHUT)
+        # 出现阈值 = 收起阈值 + 固定间距, 这样实时调一个值滞回宽度不变
+        self._shut = gap_r < (self.gap_shut + GAP_HYST if self._shut else self.gap_shut)
         if self._shut:
             keep = self._shut  # reset 会清滤波历史, 但滞回状态必须留着
             self.reset()
