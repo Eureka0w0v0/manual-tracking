@@ -431,7 +431,8 @@ def run_live(
     print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_txt}")
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
     print("  Q退出 | S风格 | D暗底 | R录制")
-    print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限  9 0 跟手程度")
+    print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限")
+    print("               9 0 旋转跟手  - = 锚点跟手(去抖)  o p 实拍底亮度")
     print("=" * 56)
 
     frame_index = 0
@@ -503,10 +504,10 @@ def run_live(
             if key in (ord("d"), ord("D")):
                 renderer.show_source = not renderer.show_source
                 print(f"show_source → {renderer.show_source}")
-            if key in (ord("+"), ord("=")):
-                renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
-            if key in (ord("-"), ord("_")):
+            if key in (ord("o"), ord("O")):
                 renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
+            if key in (ord("p"), ord("P")):
+                renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
             if key in (ord("["), ord("]")):  # screen: 翻转曲线陡度(小=灵敏, 大=中心钝但稳)
                 renderer.box.roll_expo = float(
                     np.clip(renderer.box.roll_expo + (0.1 if key == ord("]") else -0.1), 0.6, 3.0)
@@ -522,6 +523,12 @@ def run_live(
                     np.clip(renderer.box.depth_bias + (0.05 if key == ord(".") else -0.05), 0.0, 1.0)
                 )
                 print(f"depth_bias → {renderer.box.depth_bias:.2f}")
+            if key in (ord("-"), ord("_"), ord("="), ord("+")):  # screen: 锚点跟手程度
+                up = key in (ord("="), ord("+"))
+                renderer.box.anchor_resp = float(
+                    np.clip(renderer.box.anchor_resp + (0.05 if up else -0.05), 0.05, 1.0)
+                )
+                print(f"anchor_resp → {renderer.box.anchor_resp:.2f}")
             if key in (ord("7"), ord("8")):  # screen: 角速度上限(度/帧), 小=更稳但更钝
                 renderer.box.roll_max_rate = float(
                     np.clip(renderer.box.roll_max_rate + (5.0 if key == ord("8") else -5.0), 5.0, 90.0)

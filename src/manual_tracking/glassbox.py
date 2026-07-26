@@ -65,8 +65,19 @@ BOX_RATE_SMOOTH = 0.5  # 角速度估计自身的 EMA(不平滑的话增益会�
 # 所以超过这个速率的一律是误检。20°/帧 @30fps = 600°/s, 比最快的翻腕还快
 # 一倍有余, 不会削掉真实动作。限幅作用在滤波之后, 直接约束"看到的"角速度。
 BOX_ROLL_MAX_RATE = 20.0
-# ψ 的速度自适应 EMA(与 tracker.py 的 landmark 级 One Euro 同源思路, 但这里
-# 按"帧"而非墙钟计时, 保证离线渲染可复现)。固定 EMA 实测在 0.4s 快速翻手中
+# 锚点(两手挂盒点)的速度自适应滤波。它原先是**唯一没有盒级平滑的量** —— ψ/盒高/
+# 长轴深度都有 EMA, 锚点却裸传, 于是 landmark 噪声直通 8 个顶点: 实测顶点帧间
+# 位移中位 62.7px、p90 176.6px, 而同期 ψ 只有 4.46°、盒高 3.88px。
+# 用二阶差分把"真实运动"和"抖动"分开后, 锚点的抖动分量中位 13.8px/帧 —— 就是
+# 它撑起了顶点的大部分抖。这里用与 ψ 同源的自适应 EMA: 手不动时重滤波, 手快速
+# 移动时自动放开, 不引入拖影。
+BOX_ANCHOR_RESP = 0.25  # 静止时每帧吸收的新锚点比例(越小越稳、越钝)
+# 每 px/帧 速度把上面这个值抬高多少。这个数很敏感: 原片手速中位就有 28px/帧
+# (=833px/秒), 用 0.012 时 k 中位被抬到 0.68、23% 的帧顶到上限, 滤波形同虚设。
+BOX_ANCHOR_RESP_GAIN = 0.001
+BOX_ANCHOR_RESP_MAX = 0.95  # 上限; 留一点滤波, 单帧误检不会整盒瞬移
+BOX_ANCHOR_RATE_SMOOTH = 0.5  # 锚点速度估计自身的 EMA
+
 
 class GlassBox:
     """把双手姿态解成刚体长方体. 五个公开属性是 live 的实时旋钮."""
@@ -77,10 +88,13 @@ class GlassBox:
         self.depth_bias = BOX_DEPTH_BIAS  # live , . : 旋转不动点/进深中心
         self.roll_resp = BOX_ROLL_RESP  # live 9 0 : 旋转跟手程度
         self.roll_max_rate = BOX_ROLL_MAX_RATE  # live 7 8 : 角速度上限
+        self.anchor_resp = BOX_ANCHOR_RESP  # live - = : 锚点跟手程度
         self.debug = ""  # HUD 用: 当前 ψ / 双手掌朝向 / 长轴深度
         self._ema: tuple[float, float, float] | None = None  # (盒高, ψ, 长轴深度比)
         self._psi_rate = 0.0  # ψ 的角速度估计(rad/帧), 驱动自适应滤波
         self._b0_prev: np.ndarray | None = None  # 上帧的截面"上"轴(符号帧间传播)
+        self._anchor_prev: np.ndarray | None = None  # 上帧滤波后的两个锚点 (2,2)
+        self._anchor_rate = 0.0  # 锚点速度估计(px/帧)
 
     def reset(self) -> None:
         """清跨帧状态(手离场/合拢/切风格). 下一帧当作冷启动.
@@ -90,6 +104,8 @@ class GlassBox:
         self._ema = None
         self._psi_rate = 0.0
         self._b0_prev = None
+        self._anchor_prev = None
+        self._anchor_rate = 0.0
         self.debug = ""
 
     def anchor(self, hand: HandPose) -> np.ndarray:
@@ -123,7 +139,21 @@ class GlassBox:
         cL, fL, sL, pL, oL = grip(left)
         cR, fR, sR, pR, oR = grip(right)
         t = self.anchor_lift  # 0=掌心(偏低) 1=指弧中点(原片高度)
-        gL, gR = cL + (fL - cL) * t, cR + (fR - cR) * t
+        anc = np.stack([cL + (fL - cL) * t, cR + (fR - cR) * t])  # (2,2) 左右锚点
+        # 速度自适应滤波: 手不动时重滤(去抖), 手快速移动时自动放开(不拖影)。
+        # 两只手共用一个速度估计——它们本来就一起动, 分开估会让快的那只带偏慢的。
+        if self._anchor_prev is not None:
+            step = anc - self._anchor_prev
+            v = float(np.linalg.norm(step, axis=1).max())
+            self._anchor_rate = (
+                self._anchor_rate * BOX_ANCHOR_RATE_SMOOTH + v * (1.0 - BOX_ANCHOR_RATE_SMOOTH)
+            )
+            k = min(
+                self.anchor_resp + BOX_ANCHOR_RESP_GAIN * self._anchor_rate, BOX_ANCHOR_RESP_MAX
+            )
+            anc = self._anchor_prev + step * k
+        self._anchor_prev = anc
+        gL, gR = anc[0], anc[1]
         span_v = gR - gL
         span = float(np.linalg.norm(span_v))
         if span < MIN_SPAN_PX:
