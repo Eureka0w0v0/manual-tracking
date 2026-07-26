@@ -19,8 +19,9 @@ from manual_tracking.effects import BOX_FACES  # noqa: E402
 from manual_tracking.floatcube import (  # noqa: E402
     CUBE_SIZE_MAX,
     CUBE_SIZE_MIN,
-    DRAG_MAX_PX,
     ORBIT_GAIN,
+    TURN_MAX_RAD,
+    TURN_RESP,
     FloatCube,
 )
 from manual_tracking.landmarks import THUMB_TIP  # noqa: E402
@@ -54,6 +55,11 @@ def check(name: str, ok: bool, detail: str) -> bool:
     return ok
 
 
+def rot_angle(r0: np.ndarray, r1: np.ndarray) -> float:
+    """两个旋转矩阵之间的夹角(度)."""
+    return float(np.degrees(np.arccos(np.clip((np.trace(r0.T @ r1) - 1) / 2, -1, 1))))
+
+
 def main() -> int:
     good = True
 
@@ -62,9 +68,11 @@ def main() -> int:
     for axis, expect in (("横拖", {"前", "左", "背", "右"}), ("竖拖", {"前", "顶", "背", "底"})):
         c = FloatCube()
         seq = []
-        for i in range(300):
-            d = 200.0 + (i * 9) % 900  # 拖到边就抬手回起点(_grab 断了, 不算增量)
-            c.update([hand(d, 400, pinch=True) if axis == "横拖" else hand(640, d, pinch=True)], SHAPE)
+        for i in range(400):
+            d = 200.0 + (i * 9) % 900
+            lifted = i > 0 and i % 100 == 0  # 拖到边抬手一帧回起点(增量归零, 不算瞬移)
+            pin = not lifted
+            c.update([hand(d, 400, pinch=pin) if axis == "横拖" else hand(640, d, pinch=pin)], SHAPE)
             t = visible(c)
             if not seq or seq[-1] != t:
                 seq.append(t)
@@ -146,19 +154,21 @@ def main() -> int:
     spin = float(np.linalg.norm(c._spin))
     good &= check("手序对调不炸", spin < 1e-6, f"|spin| = {spin:.2e}")
 
-    # 8) 限幅只该挡检测跳变, 不该误伤真实手速(实测真手 p99 = 109 px/帧)
+    # 8) 两层限幅 × 惯性: 跳变目标被顶在 90°, 再被质量稀释成 90°×RESP 的角速度;
+    #    真实手速一帧只吃 RESP 份, 持续拖 12 帧后必须收敛到全速(不然就是"拖不动")。
     c = FloatCube()
     c.update([hand(100, 400, pinch=True)], SHAPE)
     c.update([hand(1100, 400, pinch=True)], SHAPE)  # 一帧瞬移 1000px = 误检
     capped = float(np.linalg.norm(c._spin))
     c2 = FloatCube()
-    c2.update([hand(400, 400, pinch=True)], SHAPE)
-    c2.update([hand(509, 400, pinch=True)], SHAPE)  # 109px = 真手最快的那 1%
-    real = float(np.linalg.norm(c2._spin))
+    for i in range(13):
+        c2.update([hand(100 + i * 109, 400, pinch=True)], SHAPE)  # 持续 109px/帧 = 真手最快的 1%
+    steady = float(np.linalg.norm(c2._spin))
     good &= check(
-        "限幅挡跳变但不误伤真手",
-        abs(capped - DRAG_MAX_PX * ORBIT_GAIN) < 1e-6 and abs(real - 109 * ORBIT_GAIN) < 1e-4,
-        f"1000px 跳变被截到 {capped/ORBIT_GAIN:.0f}px, 109px 真手速原样通过({real/ORBIT_GAIN:.0f}px)",
+        "跳变被质量稀释, 真手持续拖能到全速",
+        abs(capped - TURN_MAX_RAD * TURN_RESP) < 1e-6 and steady > 109 * ORBIT_GAIN * 0.99,
+        f"1000px 瞬移 → ω 只被拉到 {np.degrees(capped):.0f}°/帧 (目标顶 90°×吸收 {TURN_RESP}), "
+        f"109px 持续拖 12 帧 → ω {np.degrees(steady):.0f}°/帧 (全速 {np.degrees(109 * ORBIT_GAIN):.0f}°)",
     )
 
     # 9) 双手模式掉一帧(两手捏在一起会互相遮挡): 立方体该停住, 不该切去转动
@@ -167,7 +177,7 @@ def main() -> int:
         c.update(pair2(400 + i * 6), SHAPE)
     rot_before, pos_before = c.rot.copy(), c.pos.copy()
     c.update([hand(600, 400, pinch=True, tid=0)], SHAPE)  # 右手这帧没测到
-    turned = float(np.degrees(np.arccos(np.clip((np.trace(rot_before.T @ c.rot) - 1) / 2, -1, 1))))
+    turned = rot_angle(rot_before, c.rot)
     good &= check(
         "双手掉一帧不乱转",
         turned < 1.0 and c.mode == "move",
@@ -181,6 +191,62 @@ def main() -> int:
         c.update([], SHAPE)
     deg = float(np.linalg.norm(c._spin)) * np.degrees(1.0) * 30.0
     good &= check("松手自转速度合理", 3.0 <= deg <= 40.0, f"{deg:.1f} °/秒 (30fps)")
+
+    # 11) 松手滑行 = 物理惯性: 带走的是滤波后的动量, 不是收尾尖峰。
+    #     悠闲拖松手滑约半个面; 猛甩收尾也只滑约一个面周期, 不再是旧参数的 300°+。
+    #     对照组 = 纯 drift 同样 60 帧; 横拖惯性与 drift 都绕 y 轴, 角度可直接相减。
+    ref = FloatCube()
+    ref.update([], SHAPE)
+    ref0 = ref.rot.copy()
+    for _ in range(60):
+        ref.update([], SHAPE)
+    drift_deg = rot_angle(ref0, ref.rot)
+
+    def coast_after(px_per_frame: float, frames: int) -> float:
+        c = FloatCube()
+        for i in range(frames):
+            c.update([hand(100 + i * px_per_frame, 400, pinch=True)], SHAPE)
+        r0 = c.rot.copy()
+        for _ in range(60):
+            c.update([], SHAPE)
+        return rot_angle(r0, c.rot) - drift_deg
+
+    lazy = coast_after(15, 10)  # 悠闲拖散手
+    fling = coast_after(109, 8)  # 全速甩出去
+    good &= check(
+        "松手带惯性但不乱飞",
+        25.0 <= lazy <= 60.0 and 70.0 <= fling <= 115.0,
+        f"悠闲拖散手滑 {lazy:.0f}° (半个面), 全速甩滑 {fling:.0f}° (一个面周期; 旧参数下是 300°+)",
+    )
+
+    # 12) 捏停黏滞: 拖稳后手停住(仍捏着), 立方体要被手"黏"停 —— 5 帧内角速度掉到 10% 以下
+    c = FloatCube()
+    for i in range(10):
+        c.update([hand(100 + i * 30, 400, pinch=True)], SHAPE)
+    w0 = float(np.linalg.norm(c._spin))
+    for _ in range(5):
+        c.update([hand(100 + 9 * 30, 400, pinch=True)], SHAPE)  # 手定住
+    w5 = float(np.linalg.norm(c._spin))
+    good &= check(
+        "捏停 5 帧内停稳",
+        w0 > 0 and w5 < w0 * 0.10,
+        f"拖稳 ω {np.degrees(w0):.1f}°/帧, 手停 5 帧后剩 {np.degrees(w5):.2f}°/帧 ({w5 / w0 * 100:.0f}%)",
+    )
+
+    # 13) 双手抓住 = 锁转: 转起来的立方体被两只手一抓, 3 帧内旋转基本锁死
+    c = FloatCube()
+    for i in range(10):
+        c.update([hand(100 + i * 60, 400, pinch=True, tid=0)], SHAPE)
+    w0 = float(np.linalg.norm(c._spin))
+    for _ in range(3):
+        c.update(pair2(640), SHAPE)
+    w3 = float(np.linalg.norm(c._spin))
+    good &= check(
+        "双手抓住 3 帧锁转",
+        w0 > 0 and w3 < w0 * 0.15,
+        f"单手拖出 ω {np.degrees(w0):.1f}°/帧, 双手一抓 3 帧后剩 {w3 / w0 * 100:.0f}%",
+    )
+
 
     print("\n" + ("全部通过" if good else "有不通过项"))
     return 0 if good else 1

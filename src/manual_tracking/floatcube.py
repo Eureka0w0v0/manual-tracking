@@ -31,14 +31,33 @@ CUBE_SIZE_MAX = 0.60
 CUBE_FOCAL = 2.2  # 弱透视焦距 = 该值 × 边长; 越小透视越夸张
 PINCH_ON = 0.42  # 捏合判据: |拇指尖−食指尖| / 掌宽 低于它 = 捏住
 PINCH_OFF = 0.62  # 高于它 = 松开(滞回, 防在临界处抖动误触)
-ORBIT_GAIN = 0.016  # 拖动 1px 转多少弧度(≈ 拖 196px 转 180°, 一次手臂行程能翻一圈多)
+# 拖动 1px 转多少弧度。0.016 (拖 196px 翻 180°) 实拍反馈"太快、偶尔飞":
+# 真手 p99=109px/帧 在那个档就是 100°/帧 = 3000°/s。0.009 → 拖 349px 翻 180°
+# (屏宽 18% 一次从容行程翻一两个面), p99 降到 56°/帧。live 9/0 键随时调回。
+ORBIT_GAIN = 0.009
+# 拖动的一阶惯性: ω 每帧向"手速×gain"靠拢这个比例(1 = 直接控制, 零质量)。
+# 0.40 → 时间常数 2.5 帧 ≈ 83ms: 起步能感到它"有分量", 停手 5 帧内被黏住;
+# 误检尖峰只能把 ω 拉高 40%, 下一帧就被拉回 —— 质量本身就是滤波。
+TURN_RESP = 0.40
 DRIFT = 0.006  # 松手后的稳态自转(rad/帧 ≈ 10°/秒), 让它看着是"活的"
-SPIN_DAMP = 0.85  # 松手瞬间的惯性衰减(每帧乘这个; 大=松手后还飘很久)
+# 松手摩擦(每帧乘这个)。0.85 → 半衰 4.3 帧: 甩一下滑 1 秒左右渐停。
+# 收尾角速度 v 的滑行总角 = v·damp/(1−damp), 被 CARRY_MAX_RAD 封顶在 100°。
+SPIN_DAMP = 0.85
 # 单帧拖动上限, 定在**像素域**而不是角度域: 它的职责是挡检测跳变(实测真手
 # p99 = 109 px/帧, 而误检瞬移能到 878 px/帧), 跟灵敏度无关。原先写成角速度
 # 上限, 除以 gain 只剩 22.7 px/帧 —— 实测 30.6% 的帧被误伤, 手一快就"拖了
 # 转不动"; 而且调大 gain 会让限幅更早触发, 越调灵敏越不跟手。
 DRAG_MAX_PX = 220.0
+# 单帧转角目标的硬顶(角度域)。与 DRAG_MAX_PX 是**两层不同职责**: 像素层挡
+# "位移大得离谱"(878px 瞬移), 但 220px 截完 × gain 仍是 113°, 而立方体对称
+# 周期才 90° —— 目标越过一个周期, 面等于随机换。90° 在 gain=0.009 下等效
+# 175px, 真手 p99=109px/帧 够不到 → 零误伤。gain 被 9/0 键调大时自动变兜底。
+TURN_MAX_RAD = float(np.radians(90.0))
+# 松手能带走的角速度上限。滑行总角 = 15°/(1−0.85) = 100° —— 猛甩正好翻过
+# 一个面周期, 悠闲松手(收尾 ω 8°/帧 上下)滑半个面, 都可预期。
+CARRY_MAX_RAD = float(np.radians(15.0))
+# 被双手握住时的角速度衰减: 真实物体被两只手抓死, 旋转应当立刻锁住(3 帧 <13%)。
+GRIP_DAMP = 0.5
 # 平移/缩放是 1:1 跟手的 —— 手走多远立方体走多远, 中间不打任何折扣。
 # 原先这里有个 MOVE_SMOOTH=0.35 系数乘在**位移增量**上, 名字叫"平滑"其实是
 # 增益打折: 手拖 100px 立方体只走 35px, 拖起来永远追不上手。实测双手掌心中点
@@ -162,14 +181,14 @@ class FloatCube:
                 m = self.size * 0.5
                 self.pos = np.clip(self.pos, (m, m), (w - m, h - m)).astype(np.float32)
             self._two = (pair, mid.copy(), dist)
-            self._spin *= SPIN_DAMP
+            self._spin *= GRIP_DAMP  # 双手握死: 残余旋转立刻锁住
             self._hold = TWO_HAND_HOLD
             self.mode = MODE_MOVE
         elif self._hold > 0:  # ---- 双手模式掉了一帧: 停住, 别掉去转动 ----
             self._hold -= 1
             self._grab = None
             self._two = None  # 手回来时重新起算基线, 免得攒出一次跳变
-            self._spin *= SPIN_DAMP
+            self._spin *= GRIP_DAMP
             self.mode = MODE_MOVE
         elif n == 1:  # ---- 单手: 拖动 = 转动 ----
             self._two = None
@@ -182,16 +201,23 @@ class FloatCube:
                     d = d * (DRAG_MAX_PX / mag)
                 # 横拖 → 绕相机竖轴(y); 竖拖 → 绕相机横轴(x)。屏幕 y 朝下,
                 # 所以往下拖时立方体上缘朝自己转过来, 手感与真实抓握一致。
-                # 拖多少转多少, 中间不再打折 —— 打折就是"不跟手"的来源。
-                self._spin = np.array(
+                target = np.array(
                     [d[1] * self.orbit_gain, d[0] * self.orbit_gain, 0.0], np.float32
                 )
+                t = float(np.linalg.norm(target))
+                if t > TURN_MAX_RAD:  # 目标越过对称周期 = 面随机换, 顶住
+                    target *= TURN_MAX_RAD / t
+                # 粘性耦合(力矩 ∝ 手速与 ω 的差): ω 追手速, 不等于手速。
+                self._spin += (target - self._spin) * TURN_RESP
             self._grab = (k, p.copy())
             self.mode = MODE_TURN
         else:  # ---- 松手: 惯性 + 极慢自转 ----
             self._grab = None
             self._two = None
             self._spin *= SPIN_DAMP
+            n = float(np.linalg.norm(self._spin))
+            if n > CARRY_MAX_RAD:  # 松手滑一下可以, 乱飞不行
+                self._spin *= CARRY_MAX_RAD / n
             self._spin[1] += self.drift * (1.0 - SPIN_DAMP)  # 稳态收敛到 drift
             self.mode = MODE_IDLE
 
