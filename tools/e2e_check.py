@@ -70,13 +70,13 @@ def run(fr, cache, label, setup=None, fps=30.0):
         if len(fh.hands) < 2:
             continue
         left, right = r._ordered(fh.hands)
-        geo = r._box_geometry(left, right)
+        geo = r.box.solve(left, right)
         if geo is None:
             continue
         scr, cam, focal, _ = geo
         ar = face_areas(scr, cam, focal)
         tot = sum(ar.values()) or 1.0
-        psis.append(np.degrees(r._box_ema[1]))
+        psis.append(np.degrees(r.box._ema[1]))
         combos.append("+".join(sorted(ar)))
         reds.append(ar.get("背", 0.0) / tot)
         tops.append(ar.get("顶", 0.0) / tot)
@@ -100,6 +100,6 @@ if __name__ == "__main__":
     print(f"素材 {len(fr)} 帧, 双手帧 {sum(1 for c in cache if len(c.hands) >= 2)}\n")
     run(fr, cache, "默认")
     for e in (1.0, 1.5, 2.0):
-        run(fr, cache, f"expo={e}", lambda r, e=e: setattr(r, "roll_expo", e))
+        run(fr, cache, f"expo={e}", lambda r, e=e: setattr(r.box, "roll_expo", e))
     for c in (10.0, 20.0, 40.0):
-        run(fr, cache, f"cap={c:.0f}°/帧", lambda r, c=c: setattr(r, "roll_max_rate", c))
+        run(fr, cache, f"cap={c:.0f}°/帧", lambda r, c=c: setattr(r.box, "roll_max_rate", c))

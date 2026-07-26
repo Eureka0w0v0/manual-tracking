@@ -387,9 +387,9 @@ def run_live(
             if renderer.style == "screen" and renderer.box_debug:
                 # psi = 盒子绕长轴的角, oL/oR = 双手掌面朝向(驱动 roll 的原始信号)
                 hud += (
-                    f"  expo {renderer.roll_expo:.1f}  lift {renderer.anchor_lift:.2f}"
-                    f"  bias {renderer.depth_bias:.2f}  resp {renderer.roll_resp:.2f}"
-                    f"  cap {renderer.roll_max_rate:.0f}  {renderer.box_debug}"
+                    f"  expo {renderer.box.roll_expo:.1f}  lift {renderer.box.anchor_lift:.2f}"
+                    f"  bias {renderer.box.depth_bias:.2f}  resp {renderer.box.roll_resp:.2f}"
+                    f"  cap {renderer.box.roll_max_rate:.0f}  {renderer.box_debug}"
                 )
             cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
             cv2.putText(
@@ -423,30 +423,30 @@ def run_live(
             if key in (ord("-"), ord("_")):
                 renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
             if key in (ord("["), ord("]")):  # screen: 翻转曲线陡度(小=灵敏, 大=中心钝但稳)
-                renderer.roll_expo = float(
-                    np.clip(renderer.roll_expo + (0.1 if key == ord("]") else -0.1), 0.6, 3.0)
+                renderer.box.roll_expo = float(
+                    np.clip(renderer.box.roll_expo + (0.1 if key == ord("]") else -0.1), 0.6, 3.0)
                 )
-                print(f"roll_expo → {renderer.roll_expo:.2f}")
+                print(f"roll_expo → {renderer.box.roll_expo:.2f}")
             if key in (ord(";"), ord("'")):  # screen: 实时调盒子挂多高(掌心↔指弧)
-                renderer.anchor_lift = float(
-                    np.clip(renderer.anchor_lift + (0.05 if key == ord("'") else -0.05), 0.0, 1.4)
+                renderer.box.anchor_lift = float(
+                    np.clip(renderer.box.anchor_lift + (0.05 if key == ord("'") else -0.05), 0.0, 1.4)
                 )
-                print(f"anchor_lift → {renderer.anchor_lift:.2f}")
+                print(f"anchor_lift → {renderer.box.anchor_lift:.2f}")
             if key in (ord(","), ord(".")):  # screen: 旋转不动点 前面(0)↔体心(0.5)↔后面(1)
-                renderer.depth_bias = float(
-                    np.clip(renderer.depth_bias + (0.05 if key == ord(".") else -0.05), 0.0, 1.0)
+                renderer.box.depth_bias = float(
+                    np.clip(renderer.box.depth_bias + (0.05 if key == ord(".") else -0.05), 0.0, 1.0)
                 )
-                print(f"depth_bias → {renderer.depth_bias:.2f}")
+                print(f"depth_bias → {renderer.box.depth_bias:.2f}")
             if key in (ord("7"), ord("8")):  # screen: 角速度上限(度/帧), 小=更稳但更钝
-                renderer.roll_max_rate = float(
-                    np.clip(renderer.roll_max_rate + (5.0 if key == ord("8") else -5.0), 5.0, 90.0)
+                renderer.box.roll_max_rate = float(
+                    np.clip(renderer.box.roll_max_rate + (5.0 if key == ord("8") else -5.0), 5.0, 90.0)
                 )
-                print(f"roll_max_rate → {renderer.roll_max_rate:.0f}°/帧")
+                print(f"roll_max_rate → {renderer.box.roll_max_rate:.0f}°/帧")
             if key in (ord("9"), ord("0")):  # screen: 旋转跟手程度(大=跟手, 小=顺滑)
-                renderer.roll_resp = float(
-                    np.clip(renderer.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
+                renderer.box.roll_resp = float(
+                    np.clip(renderer.box.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
                 )
-                print(f"roll_resp → {renderer.roll_resp:.2f}")
+                print(f"roll_resp → {renderer.box.roll_resp:.2f}")
             if key in (ord("r"), ord("R")):
                 if not recording:
                     if record_path is None:
