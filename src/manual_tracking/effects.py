@@ -43,13 +43,16 @@ QUAD_MIN_CELL = 8  # 最小块边长(px), 再小就切不动了
 QUAD_MAX_DEPTH = 6  # 最大递归层数(兜底, 防极端纹理下节点爆炸)
 QUAD_VAR = 90.0  # 亮度方差超过它就继续切; 越小切得越碎
 QUAD_LINE = (30, 30, 30)  # 块描边色 BGR(原片是近黑细线)
-QUAD_WORK_MAX = 480  # 计算分辨率上限(px); 块结构在缩略图上算完放大, 观感不变
+QUAD_WORK_MAX = 360  # 计算分辨率上限(px); 块结构在缩略图上算完放大, 观感不变
 # 点云/全息(单目近似; 原片用深度相机, 这里用局部对比度代替深度)
 PC_CELL = 3  # 点阵周期(px); 调出亮点密度 14.7%, 对齐原片实测的 13.3%
 PC_GAIN = 3.5  # 局部对比度增益(伪深度强度): 越大越"只剩轮廓", 越小越像亮度图
 PC_FLOOR = 4  # 抬黑场(灰阶): 压掉平坦区的点, 让主体浮出黑底
 PC_GLOW = 3.0  # 辉光半径(px); 0 = 关掉, 点会变成硬像素块
 PC_TINT = (255, 214, 120)  # 青蓝 BGR; 实测色相 H≈98 且 p10-p90 仅 93-101
+# 点云的计算分辨率上限(px)。点阵本来就是 cell 周期的低频结构, 在缩略图上算完
+# 放大, 点会等比变大但密度观感不变 —— 实测 1660x847 的面从 5.57ms 降到 1ms 级。
+PC_WORK_MAX = 420
 # riso 版画(双色 + 通道错位边条); 参数取自 douyin 屏录实测
 RISO_DARK = (20, 142, 18)  # 暗部纯绿 BGR(实测绿区平均值)
 RISO_LIGHT = (238, 246, 248)  # 亮部近白 BGR
@@ -247,31 +250,34 @@ def _fx_riso(
     颜色取自实测: 暗部 BGR(20,142,18) 纯绿, 亮部近白。
     """
     d = np.array(dark, np.uint8)
-    li = np.array(light, np.uint8)
     offs = (-split, 0, split)  # B 左移 / G 不动 / R 右移
     # 有序抖动矩阵(Bayer 4x4): 阈值随位置微抖 → 边界不是光滑曲线而是**颗粒状**,
     # 这正是原片那股"沙"质感的来源(实测原片绿区内部 std 23.7, 不是平涂)。
-    bayer = (
-        np.array(
-            [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]],
-            np.float32,
-        )
-        / 16.0
-        - 0.5
-    )
+    #
+    # 实现走**全 OpenCV 路径**: 抖动图缓存成 uint8 偏置(不是每帧 np.tile 出
+    # float 再乘), 用 cv2.add 一次加完; 阈值+上色合成一张 256 项 LUT, 每通道
+    # 一次 cv2.LUT。原先用 int16 加法 + 三次 np.roll/np.where 要 2.4ms,
+    # 中途试过"抖动烘焙成 16 张相位表"反而更慢(16 次 copyTo, 11.9ms), 已否掉。
+    bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32)
+    # 偏置写成无符号: 先给灰度减去 dither/2 的直流, 抖动就能全用加法
+    bias_tile = np.clip(bayer / 16.0 * dither, 0, 255).astype(np.uint8)
+    dc = int(round(dither * 0.5))
+    luts = [
+        np.where(np.arange(256, dtype=np.int16) >= thresh + dc, light[i], dark[i]).astype(np.uint8)
+        for i in range(3)
+    ]
+    cache: dict[str, np.ndarray] = {}
 
     def fn(src: np.ndarray) -> np.ndarray:
         h, w = src.shape[:2]
-        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY).astype(np.int16)
-        if dither:
-            tile = np.tile(bayer, (h // 4 + 1, w // 4 + 1))[:h, :w]
-            g = g + (tile * dither).astype(np.int16)
-        out = np.empty_like(src)
-        for i, off in enumerate(offs):
-            gi = np.roll(g, off, axis=1) if off else g
-            # 每通道独立阈值; 三通道一致处为纯色, 不一致的窄带就是彩色边条
-            out[..., i] = np.where(gi >= thresh, li[i], d[i])
-        return out
+        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        big = cache.get("t")
+        if big is None or big.shape[0] < h or big.shape[1] < w:
+            big = np.tile(bias_tile, (max(h, 0) // 4 + 1, max(w, 0) // 4 + 1))
+            cache["t"] = big
+        g = cv2.add(g, big[:h, :w])  # 饱和加法, 不会回绕
+        return cv2.merge([cv2.LUT(np.roll(g, o, axis=1) if o else g, luts[i])
+                          for i, o in enumerate(offs)])
 
     return fn
 
@@ -320,8 +326,12 @@ def _fx_quadtree(
         # 观感一样但省一个数量级(1920x1080 满帧 13.5ms → 1.5ms)。
         if max(full_h, full_w) > QUAD_WORK_MAX:
             k = QUAD_WORK_MAX / max(full_h, full_w)
+        # 缩小用 INTER_AREA 会读遍全部像素, 实测 1660x847→420 要 7.81ms, 而整个
+        # 特效预算才 2-3ms —— 它是这条路径上唯一的大头。这两个特效的输出本来就是
+        # 块状/点阵的低频结构, 面积平均带来的抗锯齿看不出来, 换 INTER_NEAREST
+        # 后同一步只要 0.05ms(156x)。
             src = cv2.resize(src, (max(int(full_w * k), 8), max(int(full_h * k), 8)),
-                             interpolation=cv2.INTER_AREA)
+                             interpolation=cv2.INTER_NEAREST)
         h, w = src.shape[:2]
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
         # 一次算好: 灰度的 sum/sum²(判方差) + 彩色的 sum(取叶子均色)。
@@ -380,6 +390,16 @@ def _fx_pointcloud(
     ).astype(np.uint8)[:, None, :]
 
     def fn(src: np.ndarray) -> np.ndarray:
+        full_h, full_w = src.shape[:2]
+        # 点阵是 cell 周期的低频结构, 在缩略图上算完再放大观感一致(见 PC_WORK_MAX)
+        if max(full_h, full_w) > PC_WORK_MAX:
+            k = PC_WORK_MAX / max(full_h, full_w)
+        # 缩小用 INTER_AREA 会读遍全部像素, 实测 1660x847→420 要 7.81ms, 而整个
+        # 特效预算才 2-3ms —— 它是这条路径上唯一的大头。这两个特效的输出本来就是
+        # 块状/点阵的低频结构, 面积平均带来的抗锯齿看不出来, 换 INTER_NEAREST
+        # 后同一步只要 0.05ms(156x)。
+            src = cv2.resize(src, (max(int(full_w * k), 8), max(int(full_h * k), 8)),
+                             interpolation=cv2.INTER_NEAREST)
         h, w = src.shape[:2]
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
         # 1) 采样成点阵: 缩到 1/cell 再最近邻放大 —— 每个 cell 只剩一个采样值,
@@ -400,7 +420,10 @@ def _fx_pointcloud(
         # 4) 辉光: 点扩散成小光斑, 叠回自身 → 发光感而不是硬像素
         if glow:
             pts = cv2.addWeighted(pts, 1.0, cv2.GaussianBlur(pts, (0, 0), glow), 1.6, 0.0)
-        return cv2.applyColorMap(pts, tint_lut)
+        out = cv2.applyColorMap(pts, tint_lut)
+        if (h, w) != (full_h, full_w):
+            out = cv2.resize(out, (full_w, full_h), interpolation=cv2.INTER_LINEAR)
+        return out
 
     return fn
 
