@@ -174,7 +174,9 @@ def _draw_hud(
         f"{f'  ERR{n_err}' if n_err else ''}"
         f"{'  REC' if rec.on else ''}"
     )
-    if renderer.box_debug:  # 只有 screen 会写它, 不必判 style
+    if renderer.style == "cube":
+        hud += f"  {renderer.cube.debug}   [捏住拖动=转 / 双手捏=移动缩放]"
+    elif renderer.box_debug:  # 只有 screen 会写它, 不必判 style
         # psi = 盒子绕长轴的角, oL/oR = 双手掌面朝向(驱动 roll 的原始信号)
         b = renderer.box
         hud += (
@@ -425,14 +427,16 @@ def run_live(
     rec = _Recorder(record)
 
     print("=" * 56)
-    print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / TD横幅")
+    print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅")
     print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
     infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
     print(f"  采集 {actual_w}x{actual_h} (req {width}x{height})  推理边 {infer_txt}")
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
     print("  Q退出 | S风格 | D暗底 | R录制")
     print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限")
-    print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线  a s 通透  o p 底亮度")
+    print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线")
+    print("  cube  操作: 单手捏住拖=转 | 双手捏住=移动+缩放 | X 归位 | 9 0 拖动灵敏度")
+    print("  通用调参: g h 通透  o p 底亮度")
     print("=" * 56)
 
     frame_index = 0
@@ -529,15 +533,15 @@ def run_live(
                     np.clip(renderer.box.anchor_resp + (0.05 if up else -0.05), 0.05, 1.0)
                 )
                 print(f"anchor_resp → {renderer.box.anchor_resp:.2f}")
-            if key in (ord("a"), ord("A"), ord("s"), ord("S")) and renderer.style == "screen":
-                # screen: 玻璃通透度(正向面 alpha; 内壁按 0.42 倍跟着走)
-                up = key in (ord("s"), ord("S"))
+            if key in (ord("g"), ord("G"), ord("h"), ord("H")):
+                # 玻璃通透度(正向面 alpha; 内壁按 0.42 倍跟着走)。不能用 a/s ——
+                # s 已经是切风格键, 同一次按键会先切风格再改 alpha。
+                up = key in (ord("h"), ord("H"))
                 renderer.face_alpha = float(
                     np.clip(renderer.face_alpha + (0.05 if up else -0.05), 0.25, 1.0)
                 )
                 renderer.back_alpha = round(renderer.face_alpha * 0.42, 3)
                 print(f"face_alpha → {renderer.face_alpha:.2f} (back {renderer.back_alpha:.2f})")
-                continue
             if key in (ord("{"), ord("}")):  # screen: 棱线粗细
                 renderer.box_edge_w = int(
                     np.clip(renderer.box_edge_w + (1 if key == ord("}") else -1), 0, 8)
@@ -554,11 +558,24 @@ def run_live(
                     np.clip(renderer.box.roll_max_rate + (5.0 if key == ord("8") else -5.0), 5.0, 90.0)
                 )
                 print(f"roll_max_rate → {renderer.box.roll_max_rate:.0f}°/帧")
-            if key in (ord("9"), ord("0")):  # screen: 旋转跟手程度(大=跟手, 小=顺滑)
-                renderer.box.roll_resp = float(
-                    np.clip(renderer.box.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
-                )
-                print(f"roll_resp → {renderer.box.roll_resp:.2f}")
+            if key in (ord("9"), ord("0")):  # 旋转跟手程度(大=跟手, 小=顺滑)
+                if renderer.style == "cube":  # cube: 拖 1px 转多少
+                    renderer.cube.orbit_gain = float(
+                        np.clip(
+                            renderer.cube.orbit_gain * (1.15 if key == ord("0") else 1 / 1.15),
+                            0.002,
+                            0.06,
+                        )
+                    )
+                    print(f"orbit_gain → {renderer.cube.orbit_gain:.4f}")
+                else:
+                    renderer.box.roll_resp = float(
+                        np.clip(renderer.box.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
+                    )
+                    print(f"roll_resp → {renderer.box.roll_resp:.2f}")
+            if key in (ord("x"), ord("X")):  # cube: 位姿归位(飘出画面 / 转乱了时用)
+                renderer.cube.reset()
+                print("cube reset")
             if key in (ord("r"), ord("R")):
                 rec.toggle(out, fps_ema, frame_index >= FPS_WARMUP_FRAMES + 10)
 

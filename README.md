@@ -17,6 +17,15 @@
   | 右端 | 半调网点（暖白纸+墨点） | 自由创作 |
 
   常数标定见 [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md)
+- **`cube`**：**悬浮立方体**（v3）——和 `screen` 的根本区别是**它有自己的位姿**：立方体自己存着位置/朝向/大小，手只是控制器，松手后它留在原地继续慢慢自转（≈10°/秒）。六个面复用 `screen` 那六种像素处理。
+
+  | 手势 | 作用 |
+  |---|---|
+  | 单手捏住（拇指尖碰食指尖）拖动 | 转动：横拖绕竖轴、竖拖绕横轴 —— 用来翻面 |
+  | 双手同时捏住 | 平移（跟两手中点）+ 缩放（跟两手距离） |
+  | 松开 | 停在当前位姿，带一点惯性 |
+
+  转动驱动用的是**拖动增量**而不是手掌朝向，所以往一个方向一直拖能无限翻下去，不会像 `screen` 那样翻到某个面自己转回来（`screen` 受制于 `_orient` 的 cos 型饱和，见 `docs/GLASS_BOX_GEOMETRY.md` §6）。手感底线有自动断言：`python tools/cube_check.py`
 - **`banner`**：TouchDesigner 横幅（v2）——黄阈值头带 / X-ray 中窗 / 白分隔线 / 悬出红脚带，全部是摄像头画面的屏幕空间双色调
 - **`wire`**：纯骨架调试（`fabric`/`track`/`outline` 为旧名别名）
 
@@ -25,13 +34,14 @@
 ```bash
 ./run.sh live                              # 默认 1920x1080，自动挑本机内置摄像头
 ./run.sh live --style screen               # 直接进玻璃盒
+./run.sh live --style cube                 # 悬浮立方体（捏住拖=翻面）
 ./run.sh live --window-scale 1.4           # 窗口开大点（也可直接拖拽边角）
 # 或双击 start-live.command
 ```
 
 | 键 | 作用 |
 |---|---|
-| `S` | mirror / screen / banner / wire |
+| `S` | mirror / screen / cube / banner / wire |
 | `D` | 实拍底 / 黑底 |
 | `+` `-` | 实拍底亮度 |
 | `R` | 录制（按实测帧率、不含 HUD）→ `output/live_*.mp4` |
@@ -46,6 +56,15 @@
 | `,` `.` | `depth_bias` | 绕长轴旋转的不动点（0=前面，0.5=体心，1=后面） |
 | `7` `8` | `roll_max_rate` | 角速度上限 °/帧（挡掉 `_orient` 饱和区翻符号造成的瞬移） |
 | `9` `0` | `roll_resp` | 旋转跟手程度（大=跟手，小=顺滑） |
+| `g` `h` | `face_alpha` | 玻璃通透度（内壁 alpha 按 0.42 倍跟着走） |
+
+`cube` 的实时调参：
+
+| 键 | 参数 | 作用 |
+|---|---|---|
+| `9` `0` | `orbit_gain` | 拖 1px 转多少（大=一点点手就翻一圈） |
+| `g` `h` | `face_alpha` | 玻璃通透度 |
+| `X` | — | 位姿归位（转乱了/推到边上时按） |
 
 HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来区分「几何没转到」和「画了但读不出来」。
 

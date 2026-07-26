@@ -37,6 +37,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from .floatcube import FloatCube
 from .glassbox import GlassBox
 from .handgeom import ORIENT_GAIN, grip, orient, palm_center, pinch
 from .effects import (
@@ -84,7 +85,7 @@ TIP_IDS = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
 _PALM_IDX = np.array(PALM_RING, dtype=np.int32)
 
 # ---- 风格注册表(唯一权威; live/__main__ 从这里导入, 不要手抄) ----
-STYLES = ("mirror", "screen", "banner", "wire")
+STYLES = ("mirror", "screen", "cube", "banner", "wire")
 STYLE_ALIASES = {
     "fabric": "mirror",
     "frame": "mirror",
@@ -234,8 +235,9 @@ class VectorOverlayRenderer:
         self.show_source = show_source
         self.source_dim = float(source_dim)
         self.box = GlassBox()  # screen 的几何求解器(自带跨帧状态与实时旋钮)
+        self.cube = FloatCube()  # cube 风格: 悬浮立方体, 自带位姿
         self.box_edge_w = BOX_EDGE_W  # 盒子棱线宽度(live 的 { } 键)
-        self.face_alpha = BOX_FACE_ALPHA  # 正向面不透明度(live 的 a s 键)
+        self.face_alpha = BOX_FACE_ALPHA  # 正向面不透明度(live 的 g h 键)
         self.back_alpha = BOX_BACK_ALPHA  # 背向面(内壁)不透明度
         self._role_ids: tuple[int, int] | None = None  # (左手 sid, 右手 sid)
 
@@ -283,7 +285,12 @@ class VectorOverlayRenderer:
             out[:] = (8, 6, 12)
 
         hands = frame_hands.hands
-        if len(hands) >= 2:
+        if self.style == "cube":
+            # cube 与其它风格根本不同: 它自己存着位姿, 一只手也能操作, 没有手时
+            # 照样悬浮 —— 所以既不走"双手"分支, 也不该被清状态。
+            self.cube.update(hands, out.shape[:2])
+            self._draw_cube(out, frame_bgr, frame_hands.index)
+        elif len(hands) >= 2:
             if self.style == "mirror":
                 self._draw_sheet(out, frame_bgr, hands)
             elif self.style == "screen":
@@ -443,6 +450,39 @@ class VectorOverlayRenderer:
                 if e not in drawn:
                     drawn.add(e)
                     _edge_line(canvas, scr[a], scr[b], width=self.box_edge_w)
+
+    def _draw_cube(self, canvas: np.ndarray, frame_bgr: np.ndarray, seed: int) -> None:
+        """悬浮立方体: 位姿来自 FloatCube, 六个面复用 effects.BOX_FACES."""
+        scr, cam, focal = self.cube.project(canvas.shape[:2])
+        eye = np.array([0.0, 0.0, focal], np.float32)
+        center = cam.mean(axis=0)
+        front: list[tuple[float, Face]] = []
+        back: list[tuple[float, Face]] = []
+        for face in BOX_FACES:
+            q = cam[list(face.verts)]
+            n = np.cross(q[1] - q[0], q[2] - q[0])
+            fc = q.mean(axis=0)
+            if float(n @ (fc - center)) < 0.0:
+                n = -n
+            (front if float(n @ (eye - fc)) > 0.0 else back).append((float(fc[2]), face))
+        front.sort(key=lambda v: v[0])
+        back.sort(key=lambda v: v[0])
+        self.cube.debug += "  " + ("+".join(f.tag for _, f in front) or "-")
+        for layer, alpha in ((back, self.back_alpha), (front, self.face_alpha)):
+            for _, face in layer:
+                quad = scr[list(face.verts)]
+                _fill(canvas, frame_bgr, quad, face.fx, (0.0, 0.0), alpha)
+                if face.is_top and layer is front:
+                    self._glitch(canvas, frame_bgr, quad, seed)
+        if self.box_edge_w > 0:
+            drawn: set[tuple[int, int]] = set()
+            for _, face in front:
+                idx = face.verts
+                for a, b in zip(idx, idx[1:] + idx[:1]):
+                    e = (a, b) if a < b else (b, a)
+                    if e not in drawn:
+                        drawn.add(e)
+                        _edge_line(canvas, scr[a], scr[b], width=self.box_edge_w)
 
     def _glitch(self, canvas: np.ndarray, frame_bgr: np.ndarray, top: np.ndarray, seed: int) -> None:
         """蓝顶面横条故障: 水平位移的原色背景条(不染蓝)."""
