@@ -21,11 +21,10 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, "src")
-import manual_tracking.renderer as R  # noqa: E402
+from manual_tracking.effects import BOX_FACES  # noqa: E402
 from manual_tracking.renderer import VectorOverlayRenderer  # noqa: E402
 from manual_tracking.tracker import HandTracker  # noqa: E402
 
-TAGS = ("前", "背", "底", "顶", "左", "右")
 
 
 def load(path="assets/sample.mp4"):
@@ -47,18 +46,18 @@ def face_areas(scr, cam, focal):
     eye = np.array([0, 0, focal], np.float32)
     ctr = cam.mean(0)
     out = {}
-    for fi, (idx, _) in enumerate(R._BOX_FACES):
-        q = cam[list(idx)]
+    for face in BOX_FACES:
+        q = cam[list(face.verts)]
         n = np.cross(q[1] - q[0], q[2] - q[0])
         fc = q.mean(0)
         if float(n @ (fc - ctr)) < 0:
             n = -n
         if float(n @ (eye - fc)) > 0:
-            p = scr[list(idx)]
+            p = scr[list(face.verts)]
             a = 0.5 * abs(
                 float(np.dot(p[:, 0], np.roll(p[:, 1], -1)) - np.dot(p[:, 1], np.roll(p[:, 0], -1)))
             )
-            out[TAGS[fi]] = a
+            out[face.tag] = a
     return out
 
 

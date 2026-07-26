@@ -15,7 +15,7 @@ screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
   相机俯角与用户 roll 同轴(都绕长轴), 合成单一角 ψ, 无翻面状态机。
   弱透视 f/(f−toward) 给出真实两点透视(后棱自动短于前棱)。
   面可见性 = 3D 外法线朝向相机(物理正确)。
-  六个面六种像素处理(见 _BOX_FACES): 顶=蓝反相+横条 glitch / 前=绿+色阶断层 /
+  六个面六种像素处理(见 effects.BOX_FACES): 顶=蓝反相+横条 glitch / 前=绿+色阶断层 /
   背=红+横向色差 / 底=X-ray+扫描线 / 左端=浮雕线稿 / 右端=半调网点。
   只描可见面的棱(背面的棱被实体挡住)。
   五指收拢 → 盒高→0 塌成扁带; 双手合拢 → 白色种子点。
@@ -36,6 +36,23 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from .effects import (
+    BOX_FACES,
+    GLITCH_H,
+    GLITCH_HOLD,
+    GLITCH_SHIFT,
+    GLITCH_STRIPS,
+    GLITCH_W,
+    Face,
+    BANNER_YELLOW,
+    RED_CMAP,
+    WHITE_CMAP,
+    XRAY_CMAP,
+    YELLOW_CMAP,
+    FaceEffect,
+    fx_mirror,
+    _fx_lut,
+)
 from .landmarks import (
     CONNECTIONS,
     INDEX_DIP,
@@ -59,12 +76,6 @@ WHITE_HOT = (230, 250, 255)
 EDGE = (255, 255, 255)  # free-edge outlines (实测纯白 4px@1080p)
 FRINGE_WARM = (40, 150, 255)  # 描边色差晕: 亮侧橙
 FRINGE_COOL = (235, 225, 90)  # 描边色差晕: 暗侧青
-BANNER_YELLOW = (26, 177, 223)  # #DFB11A
-BANNER_Y_DARK = (5, 16, 32)  # #201005
-BANNER_RED = (8, 23, 213)  # #D51708
-BANNER_R_DARK = (0, 8, 58)  # #3A0800
-BANNER_WHITE = (218, 230, 236)  # #ECE6DA
-BANNER_W_DARK = (16, 26, 42)  # #2A1A10
 
 TIP_IDS = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
 _PALM_IDX = np.array(PALM_RING, dtype=np.int32)
@@ -93,10 +104,6 @@ ROLE_HYST_PX = 25.0  # 左右角色互换需越过的掌心 x 差(防双手并�
 ORIENT_GAIN = 2.2  # 手掌朝向→明暗的灵敏度(越大翻手反应越猛)
 BASE_B = 0.85  # 默认亮度(纸平摊时接近亮白)
 B_SWING = 0.65  # 翻手带来的亮度摆幅
-# 反相镜面(逐帧实测: face = clamp(283 - 0.56*bg), 暗面再乘冷灰)
-MIRROR_A = 283.0
-MIRROR_B = 0.56
-COOL_G, COOL_R = 0.86, 0.84
 COOL_START = 0.7  # 亮度低于此值开始变冷
 COOL_RATE = 1.8  # 变冷速度
 MIRROR_SHIFT = 0.35  # 折起的面采样点外移量(跨距比例)
@@ -137,24 +144,6 @@ BOX_RATE_SMOOTH = 0.5  # 角速度估计自身的 EMA(不平滑的话增益会�
 # 所以超过这个速率的一律是误检。20°/帧 @30fps = 600°/s, 比最快的翻腕还快
 # 一倍有余, 不会削掉真实动作。限幅作用在滤波之后, 直接约束"看到的"角速度。
 BOX_ROLL_MAX_RATE = 20.0
-# ---- 每面特效的参数(六个面各一套, 见 _BOX_FACES) ----
-POSTER_LEVELS = 6  # 前面色阶断层的级数(2=极简剪影, 6=版画感, ≥24 基本等于连续)
-RED_SPLIT_PX = 3  # 背面横向色差: R 右移/B 左移的像素数(原片实测 R 相对 B +3px)
-SCAN_PERIOD = 4  # 底面全息扫描线周期(行)
-SCAN_DEPTH = 0.35  # 扫描线压暗深度 0-1
-EMBOSS_BASE = 210.0  # 端面浮雕的中性底(差分为 0 处的亮度)
-EMBOSS_GAIN = 1.1  # 浮雕对角差分增益(越大线条越硬)
-EMBOSS_TINT = (1.00, 0.94, 0.88)  # 浮雕的冷白染色 BGR 乘子
-HALFTONE_CELL = 6  # 端面网点的格子边长(px); 越小点越密
-HALFTONE_PAPER = (228, 240, 244)  # 网点底色(暖白纸) BGR
-HALFTONE_INK = (43, 23, 23)  # 网点墨色 BGR
-# 蓝顶面横条 glitch(实测 h15-40 w50-400 @1080p, 按 720p 采集缩放到 2/3)
-GLITCH_STRIPS = 3
-GLITCH_H = (10, 27)
-GLITCH_W = (40, 260)
-GLITCH_SHIFT = 40
-GLITCH_HOLD = 2  # 每 N 帧换一次图案, 逐帧换会闪成噪声
-BANNER_THRESH = 115  # banner 双色调亮度阈值
 
 
 # ---- 手部几何 ----
@@ -241,231 +230,7 @@ def _edge_line(
     )
 
 
-# ---- 颜色映射(gray→BGR 的 256 级 colormap, 配 cv2.applyColorMap) ----
 
-
-def _build_lut(points: list[tuple[float, tuple[float, float, float]]]) -> np.ndarray:
-    """把 (背景亮度, BGR) 控制点插值成 256x1x3 colormap (实测 gradient map)."""
-    lums = np.array([p[0] for p in points], np.float32)
-    chans = np.array([p[1] for p in points], np.float32)
-    xs = np.arange(256, dtype=np.float32)
-    lut = np.stack([np.interp(xs, lums, chans[:, c]) for c in range(3)], axis=1)
-    return np.clip(lut, 0, 255).astype(np.uint8).reshape(256, 1, 3)
-
-
-def _duotone_cmap(
-    dark: tuple[int, int, int],
-    bright: tuple[int, int, int],
-    thresh: int,
-    soft: int = 0,
-) -> np.ndarray:
-    """双色调 colormap: 亮度阈值拍成两色(soft>0 时软过渡)."""
-    xs = np.arange(256, dtype=np.float32)
-    if soft > 0:
-        w = np.clip((xs - (thresh - soft)) / (2.0 * soft), 0.0, 1.0)
-    else:
-        w = (xs > thresh).astype(np.float32)
-    cm = np.array(dark, np.float32) * (1.0 - w[:, None]) + np.array(bright, np.float32) * w[:, None]
-    return np.clip(cm, 0, 255).astype(np.uint8).reshape(256, 1, 3)
-
-
-def _xray_cmap() -> np.ndarray:
-    """中窗模式 A "苍白 X-ray": 以 0.5 为轴的 solarize(输出下限 0.5), 去饱和."""
-    g = np.arange(256, dtype=np.float32) / 255.0
-    sol = np.clip((0.5 + np.abs(g - 0.5)) * 255.0, 0, 255).astype(np.uint8)
-    return cv2.cvtColor(sol.reshape(256, 1), cv2.COLOR_GRAY2BGR)
-
-
-# 逐像素实测的盒子三面 LUT: 顶面蓝=反相型, 前面绿/背面红=正相型
-BLUE_LUT = _build_lut(
-    [
-        (30, (254, 142, 82)),
-        (60, (252, 120, 94)),
-        (110, (227, 116, 64)),
-        (150, (200, 87, 55)),
-        (200, (213, 94, 58)),
-        (250, (234, 135, 116)),
-    ]
-)
-GREEN_LUT = _build_lut(
-    [
-        (16, (44, 76, 42)),
-        (48, (61, 108, 61)),
-        (80, (80, 131, 77)),
-        (144, (117, 190, 153)),
-        (176, (154, 233, 215)),
-        (255, (224, 255, 255)),
-    ]
-)
-# 背面红。原片逐像素实测值是一条很窄的暗红带(灰60→亮度52.7, 灰160→82.0,
-# 全域跨度仅 60), 实测**比 source_dim=0.65 压过的背景还暗**(灰160 处背景 104
-# vs 红面 82) —— 翻过去了也读不出来, 用户反馈的"看不到后面"有一半是这个。
-# 下面这组保持红相(红度 @灰110 从 54 提到 169)但把动态范围拉到 174, 每一档
-# 都亮过背景。原片测量值保留在上面的注释里, 要还原保真度就换回去。
-RED_LUT = _build_lut(
-    [
-        (16, (24, 20, 58)),
-        (48, (32, 26, 112)),
-        (80, (38, 30, 168)),
-        (112, (46, 36, 212)),
-        (144, (58, 46, 238)),
-        (176, (84, 68, 250)),
-        (216, (134, 116, 254)),
-        (255, (190, 180, 255)),
-    ]
-)
-YELLOW_CMAP = _duotone_cmap(BANNER_Y_DARK, BANNER_YELLOW, BANNER_THRESH)
-WHITE_CMAP = _duotone_cmap(BANNER_W_DARK, BANNER_WHITE, BANNER_THRESH, soft=45)
-RED_CMAP = _duotone_cmap(BANNER_R_DARK, BANNER_RED, BANNER_THRESH)
-XRAY_CMAP = _xray_cmap()
-
-# ---- 每面的像素处理(effect): src_bgr → out_bgr, 同尺寸 ----
-# 所有 _fx_* 都是"参数 → 处理函数"的工厂, 处理函数满足这个签名:
-FaceEffect = Callable[[np.ndarray], np.ndarray]
-# 原片实测结论(逐像素, 帧 264/288):
-#   · 面内是真正的 gradient map, 不是平涂——绿前面 BGR 三通道都跑满 0~255,
-#     亮度 std 34; 蓝顶面 B 148~255 / G 23~155 / R 27~122
-#   · 红背面有横向色差: R 相对 B 位移 +3px(r=0.683), 白描边上肉眼可见冷暖边
-#   · **没有扫描线**: 去趋势后行方向频谱无主导频率, 2 行调制深度只有 0.07 灰阶
-#     (肉眼看到的"横条"是 h.264 压缩块, 不是特效)
-# 端面/底面在原片里几乎没露过, 属于自由创作区; 取用户自己那套 hand-frame-glitch
-# 的风格语汇(浮雕线稿 / 半调网点 / 全息扫描线)。
-
-
-def _fx_lut(lut: np.ndarray, split: int = 0) -> FaceEffect:
-    """gradient map; split>0 时附加横向色差(R 右移、B 左移)."""
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        out = cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), lut)
-        if split:
-            out[..., 2] = np.roll(out[..., 2], split, axis=1)
-            out[..., 0] = np.roll(out[..., 0], -split, axis=1)
-        return out
-
-    return fn
-
-
-def _fx_poster(lut: np.ndarray, levels: int) -> FaceEffect:
-    """gradient map + 色阶断层: 先把灰度量化成 levels 级再查表 → 版画式硬边。
-
-    量化在**查表前**做, 所以断层落在 LUT 的采样点上, 每一级都是 LUT 上的一个
-    确定颜色, 不会出现插值出来的中间色。
-    """
-    step = 256.0 / max(levels, 2)
-    q = (np.clip((np.arange(256) / step).astype(np.int32), 0, levels - 1) * step + step * 0.5).astype(
-        np.uint8
-    )
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        g = cv2.LUT(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), q)
-        return cv2.applyColorMap(g, lut)
-
-    return fn
-
-
-def _fx_scan(lut: np.ndarray, period: int, depth: float) -> FaceEffect:
-    """gradient map + 全息扫描线: 每 period 行压暗 depth.
-
-    只对 1/period 的行做原地缩放(切片是视图), 不是整幅乘一个列向量——后者
-    要分配一个全画幅 float 中间量, 实测慢 4 倍。
-    """
-    keep = 1.0 - depth
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        out = cv2.applyColorMap(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), lut)
-        rows = out[::period]
-        cv2.convertScaleAbs(rows, dst=rows, alpha=keep)
-        return out
-
-    return fn
-
-
-_EMBOSS_K = np.array([[-1, 0, 0], [0, 0, 0], [0, 0, 1]], np.float32)
-
-
-def _fx_emboss(base: float, gain: float, tint: tuple[float, float, float]) -> FaceEffect:
-    """浮雕线稿: 对角差分 + 常数底 → 白色浅浮雕(端面读作"截面").
-
-    差分值域是 [-255,255], 所以整条 base+gain*d 曲线预算成 511 项查表; 染色
-    再用一张 256 项 colormap。两次查表代替两个全画幅 float 乘法(实测 13.2→1.3ms)。
-    """
-    ramp = np.clip(base + np.arange(-255, 256, dtype=np.float32) * gain, 0, 255).astype(np.uint8)
-    tint_lut = np.clip(
-        np.arange(256, dtype=np.float32)[:, None] * np.array(tint, np.float32), 0, 255
-    ).astype(np.uint8)[:, None, :]
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-        d = cv2.filter2D(g, cv2.CV_16S, _EMBOSS_K)
-        return cv2.applyColorMap(ramp[d + 255], tint_lut)
-
-    return fn
-
-
-def _halftone_thresh(cell: int) -> np.ndarray:
-    """一个 cell 的阈值瓦片: 到中心距离² 归一化. 越靠边阈值越低 → 点从中心长大."""
-    c = (cell - 1) * 0.5
-    y, x = np.mgrid[0:cell, 0:cell].astype(np.float32)
-    r = np.hypot(y - c, x - c) / max(c, 1e-6)
-    return np.clip(1.0 - r * r, 0.0, 1.0)
-
-
-def _fx_halftone(cell: int, paper: tuple[int, int, int], ink: tuple[int, int, int]) -> FaceEffect:
-    """半调网点: 亮度低于"到中心距离"阈值的像素上墨 → 点随暗部长大.
-
-    平铺阈值图**按需增长后长期复用**, 每帧只做一次切片(视图, 免费)+ 一次
-    uint8 比较 + 一次调色板索引。原先每帧重新 np.tile 要 16.6ms, 现在 1.5ms。
-    """
-    tile = (_halftone_thresh(cell) * 255.0).astype(np.uint8)
-    duo = np.empty((256, 1, 3), np.uint8)
-    duo[:128] = np.array(paper, np.uint8)  # 掩码 0 = 亮 = 纸
-    duo[128:] = np.array(ink, np.uint8)  # 掩码 255 = 暗 = 墨
-    cache: dict[str, np.ndarray] = {}
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        h, w = src.shape[:2]
-        big = cache.get("t")
-        if big is None or big.shape[0] < h or big.shape[1] < w:
-            reps = (max(h, big.shape[0] if big is not None else 0) // cell + 1,
-                    max(w, big.shape[1] if big is not None else 0) // cell + 1)
-            big = np.tile(tile, reps)
-            cache["t"] = big
-        g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-        # compare → 0/255 掩码, 再走 applyColorMap 的双色表; 全程 OpenCV, 不做
-        # numpy 花式索引(那一步实测占 10ms 里的 8ms)
-        return cv2.applyColorMap(cv2.compare(g, big[:h, :w], cv2.CMP_LT), duo)
-
-    return fn
-
-
-# 长方体拓扑: 顶点索引 = x*4 + u*2 + w
-#   x: 0=左端 1=右端 / u: 0=下 1=上 / w: 0=前(贴指弧) 1=后(远离镜头)
-# 绕序无所谓——外法线在运行时用"面心 − 体心"定向, 不靠手工排 CCW。
-# 六个面六种处理, 彼此一眼可分:
-_BOX_FACES: tuple[tuple[tuple[int, int, int, int], FaceEffect], ...] = (
-    ((0, 4, 6, 2), _fx_poster(GREEN_LUT, POSTER_LEVELS)),  # 前面: 绿 + 色阶断层
-    ((1, 5, 7, 3), _fx_lut(RED_LUT, split=RED_SPLIT_PX)),  # 背面: 红 + 色差(原片实测)
-    ((0, 4, 5, 1), _fx_scan(XRAY_CMAP, SCAN_PERIOD, SCAN_DEPTH)),  # 底面: X光 + 扫描线
-    ((2, 6, 7, 3), _fx_lut(BLUE_LUT)),  # 顶面: 蓝反相(原片实测) + 横条 glitch
-    ((0, 2, 3, 1), _fx_emboss(EMBOSS_BASE, EMBOSS_GAIN, EMBOSS_TINT)),  # 左端: 浮雕线稿
-    ((4, 6, 7, 5), _fx_halftone(HALFTONE_CELL, HALFTONE_PAPER, HALFTONE_INK)),  # 右端: 网点
-)
-_BOX_TOP_FACE = 3  # 顶面在 _BOX_FACES 里的下标(采样偏移 + glitch 只给它)
-_BOX_FACE_TAGS = ("前", "背", "底", "顶", "左", "右")  # HUD 显示当前可见面用
-
-
-def _mirror_lut(cool: float) -> np.ndarray:
-    """反相镜面的逐通道 LUT: clamp(A - B*bg), 冷灰只压 G/R."""
-    vals = np.clip(MIRROR_A - MIRROR_B * np.arange(256, dtype=np.float32), 0, 255)
-    lut = np.stack(
-        [
-            vals,
-            vals * (1.0 - (1.0 - COOL_G) * cool),
-            vals * (1.0 - (1.0 - COOL_R) * cool),
-        ],
-        axis=1,
-    )
-    return np.clip(lut, 0, 255).astype(np.uint8).reshape(1, 256, 3)
 
 
 # ---- 填充原语 ----
@@ -509,16 +274,6 @@ def _fill(
         return
     roi, src, mask, _ = got
     cv2.copyTo(np.ascontiguousarray(fx(src)), mask, roi)
-
-
-def _fx_mirror(cool: float) -> FaceEffect:
-    """反相镜面: 逐通道 LUT, 平贴时 shift≈0 → 背景以负片鬼影透出."""
-    lut = _mirror_lut(cool)
-
-    def fn(src: np.ndarray) -> np.ndarray:
-        return cv2.LUT(src, lut)
-
-    return fn
 
 
 class VectorOverlayRenderer:
@@ -686,7 +441,7 @@ class VectorOverlayRenderer:
             # 折起的面: 镜面采样点沿跨距方向外移, 采到别处(亮墙反相成暗面)
             shift_v = u * (side * (1.0 - b) * MIRROR_SHIFT * span)
             cool = float(np.clip((COOL_START - b) * COOL_RATE, 0.0, 1.0))
-            _fill(canvas, frame_bgr, poly, _fx_mirror(cool), (float(shift_v[0]), float(shift_v[1])))
+            _fill(canvas, frame_bgr, poly, fx_mirror(cool), (float(shift_v[0]), float(shift_v[1])))
             pr = np.round(poly).astype(np.int32)
             # 描边只描自由边(整面轮廓), 附 ±2px 色差晕
             cv2.polylines(canvas, [pr + (2, 1)], True, FRINGE_WARM, 1, cv2.LINE_AA)
@@ -700,7 +455,7 @@ class VectorOverlayRenderer:
     ) -> tuple[np.ndarray, np.ndarray, float, float] | None:
         """双手参数 → 刚体长方体, 返回 (屏幕 8 顶点, 相机系 8 顶点, 焦距, 盒长).
 
-        顶点索引 = x*4 + u*2 + w, 与 _BOX_FACES 一致。
+        顶点索引 = x*4 + u*2 + w, 与 effects.BOX_FACES 一致。
 
         长轴是**真 3D 向量**: 屏幕位移来自两掌心连线, 深度分量来自两手掌宽比
         (投影尺寸 ∝ 1/距离, 一只手往前伸盒子就指向镜头)。所以盒子能朝任意
@@ -829,37 +584,38 @@ class VectorOverlayRenderer:
         # 外法线用"面心 − 体心"定向, 免去手工排 CCW 的符号坑。
         eye = np.array([0.0, 0.0, focal], np.float32)
         center = cam.mean(axis=0)
-        vis: list[tuple[float, int, tuple[int, int, int, int], FaceEffect]] = []
-        for fi, (idx, fx) in enumerate(_BOX_FACES):
-            q = cam[list(idx)]
+        vis: list[tuple[float, int, Face]] = []
+        for fi, face in enumerate(BOX_FACES):
+            q = cam[list(face.verts)]
             n = np.cross(q[1] - q[0], q[2] - q[0])
             face_c = q.mean(axis=0)
             if float(n @ (face_c - center)) < 0.0:
                 n = -n
             if float(n @ (eye - face_c)) > 0.0:
-                vis.append((float(face_c[2]), fi, idx, fx))
+                vis.append((float(face_c[2]), fi, face))
         # 凸体 + 背面剔除 ⇒ 可见面在投影上恰好铺满剪影一次, 互不重叠(实测原片
         # 187 帧两两交集面积恒为 0)。所以这里排序纯粹是让绘制顺序确定, 与遮挡
         # 无关——去掉它只会让共享棱的抗锯齿舍入差 1 个灰阶。
         vis.sort(key=lambda v: v[0])
         # HUD 用: 当前哪些面朝着镜头。调 roll 时靠它区分"几何没转到"和
         # "画了但读不出来"(红背 LUT 在暗底上是全场最暗的一块, 很容易漏看)
-        self.box_debug += "  " + ("+".join(_BOX_FACE_TAGS[v[1]] for v in vis) or "-")
+        self.box_debug += "  " + ("+".join(v[2].tag for v in vis) or "-")
 
         if not vis:  # 盒高恰好为 0: 所有面零面积, 兜底描一条侧视细线
             _edge_line(canvas, scr[0], scr[4])
             return
 
-        for _, fi, idx, fx in vis:
-            quad = scr[list(idx)]
-            shift = (0.0, BOX_SAMPLE_K * length) if fi == _BOX_TOP_FACE else (0.0, 0.0)
-            _fill(canvas, frame_bgr, quad, fx, shift)
-            if fi == _BOX_TOP_FACE:
+        for _, _fi, face in vis:
+            quad = scr[list(face.verts)]
+            shift = (0.0, BOX_SAMPLE_K * length) if face.is_top else (0.0, 0.0)
+            _fill(canvas, frame_bgr, quad, face.fx, shift)
+            if face.is_top:
                 self._glitch(canvas, frame_bgr, quad, seed)
 
         # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)
         drawn: set[tuple[int, int]] = set()
-        for _, _, idx, _fx in vis:
+        for _, _, face in vis:
+            idx = face.verts
             for a, b in zip(idx, idx[1:] + idx[:1]):
                 e = (a, b) if a < b else (b, a)
                 if e not in drawn:
