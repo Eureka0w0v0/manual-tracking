@@ -19,7 +19,9 @@ from manual_tracking.effects import BOX_FACES  # noqa: E402
 from manual_tracking.floatcube import (  # noqa: E402
     CUBE_SIZE_MAX,
     CUBE_SIZE_MIN,
+    GRAB_TTL,
     ORBIT_GAIN,
+    PINCH_OFF_FRAMES,
     RIPPLE_LIFE,
     TURN_MAX_RAD,
     TURN_RESP,
@@ -71,7 +73,9 @@ def main() -> int:
         seq = []
         for i in range(400):
             step = (i * 9) % 900
-            lifted = i > 0 and i % 100 == 0  # 拖到边抬手一帧回起点(增量归零, 不算瞬移)
+            # 抬手回起点: 松开需要连续 PINCH_OFF_FRAMES 帧确认(单帧算尖峰),
+            # 所以这里真的抬满 3 帧 —— 增量归零, 不算瞬移
+            lifted = i > 0 and i % 100 < PINCH_OFF_FRAMES
             pin = not lifted
             # 序列从盒子上出发: 抓取要求捏点落在盒上建立(GRAB_RADIUS)
             hd = hand(640 + step, 400, pinch=pin) if axis == "横拖" else hand(640, 456 + step, pinch=pin)
@@ -332,6 +336,48 @@ def main() -> int:
     c.update([hand(200, 620, pinch=False)], SHAPE)
     c.update([hand(200, 620, pinch=True)], SHAPE)  # 空气里捏合
     good &= check("捏空气无涟漪", len(c.ripples) == 0, f"空捏后涟漪 {len(c.ripples)} 圈")
+
+    # 20) 检测掉几帧不脱手: MediaPipe 快速移动/翻腕遮挡时丢 1-3 帧是常态。
+    #     抓取状态按 GRAB_TTL 冻结 —— 手回来时哪怕已被拖出盒子半径, 也直接
+    #     续上继续控制(没有宽限的话, 半路脱手后永远抓不回去)。
+    c = FloatCube()
+    c.update([hand(640, 456, pinch=True, tid=5)], SHAPE)  # 在盒上抓住
+    for i in range(1, 6):
+        c.update([hand(640 + i * 40, 456, pinch=True, tid=5)], SHAPE)  # 拖出盒外
+    for _ in range(3):
+        c.update([], SHAPE)  # 检测丢 3 帧(GRAB_TTL 内)
+    c.update([hand(900, 456, pinch=True, tid=5)], SHAPE)  # 回来时捏点在盒外 260px
+    good &= check(
+        "检测掉 3 帧不脱手",
+        c._grabbing.get(5, False) and c.mode == "turn",
+        f"丢 3 帧后回来(盒外)仍抓着, 模式 {c.mode}",
+    )
+
+    # 21) 宽限耗尽才真正断: 长时间丢手不该永远赖着
+    for _ in range(GRAB_TTL + 1):
+        c.update([], SHAPE)
+    c.update([hand(900, 456, pinch=True, tid=5)], SHAPE)  # 回来时在盒外 → 建立不上
+    good &= check(
+        "宽限耗尽后要重新抓",
+        not c._grabbing.get(5, False),
+        f"丢 {GRAB_TTL + 1} 帧后回来(盒外), 抓取已断",
+    )
+
+    # 22) 单帧"松开"尖峰不断捏: 拖动翻腕时指尖被手背遮挡, landmark 乱跳一帧
+    #     把比值冲过 PINCH_OFF 很常见 —— 那是误检不是松手, 要连帧确认。
+    c = FloatCube()
+    c.update([hand(640, 456, pinch=True, tid=7)], SHAPE)
+    c.update([hand(640, 456, pinch=False, tid=7)], SHAPE)  # 单帧冲过 OFF
+    one = c._pinch.get(7, False)
+    c.update([hand(640, 456, pinch=True, tid=7)], SHAPE)  # 尖峰过去, 恢复
+    back = c._pinch.get(7, False)
+    for _ in range(PINCH_OFF_FRAMES):
+        c.update([hand(640, 456, pinch=False, tid=7)], SHAPE)  # 连续 3 帧 = 真松手
+    good &= check(
+        "单帧松开尖峰不断捏",
+        one and back and not c._pinch.get(7, False),
+        f"尖峰 1 帧仍捏着={one}, 恢复={back}, 连续 {PINCH_OFF_FRAMES} 帧后才松",
+    )
 
     print("\n" + ("全部通过" if good else "有不通过项"))
     return 0 if good else 1

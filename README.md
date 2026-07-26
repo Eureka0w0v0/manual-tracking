@@ -21,7 +21,7 @@
 
   | 手势 | 作用 |
   |---|---|
-  | 单手**捏在立方体上**拖动 | 转动：横拖绕竖轴、竖拖绕横轴 —— 用来翻面。抓住的瞬间捏点炸开一圈**涟漪**（回执）；捏在空气里无效——抓取 = 捏合 ∧ 捏点落在盒上（建立后拖到哪都跟手，松开捏合才脱手） |
+  | 单手**捏在立方体上**拖动 | 转动：横拖绕竖轴、竖拖绕横轴 —— 用来翻面。抓住的瞬间捏点炸开一圈**涟漪**（回执）；捏在空气里无效——抓取 = 捏合 ∧ 捏点落在盒上（建立后拖到哪都跟手，检测掉帧 ~0.25s 内不脱手，单帧"松开"尖峰不算松，松开捏合才断） |
   | 双手**都捏在立方体上** | 平移（跟两手中点）+ 缩放（跟两手距离；缩放会把手拉出盒外，建立过就不脱手） |
   | **五指张开** | **炸开视图**：六个面沿各自法线飞离体心悬停——唯一能同时看全六种像素处理的姿态；握拳/放下手收拢 |
   | 松开 | 带走动量：转动继续滑、平移继续漂、**碰到画面边缘会反弹**，摩擦渐停后回到悠闲自转 |
@@ -84,8 +84,8 @@ HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check src tools tests                       # 静态检查（配置在 pyproject.toml）
-.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，96 条，<1 秒
-PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，18 条断言
+.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，95 条，<1 秒
+PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，23 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数
 ```
@@ -99,7 +99,7 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 | 回归 | `tools/e2e_check.py` | 改差了不好用：颜色频闪、背面读不出 | 样片 + 模型 |
 
 改完 `screen` 的几何/映射/滤波必须跑 `e2e_check`：它是唯一能发现「可见面每秒切换
-5 次」这类体感灾难的手段——`tests/` 那 96 条全绿也照样看不见频闪。基线与结论见
+5 次」这类体感灾难的手段——`tests/` 那 95 条全绿也照样看不见频闪。基线与结论见
 [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md) §3.6–3.8。
 
 `tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手（21 个 landmark 全铺满：

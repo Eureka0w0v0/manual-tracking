@@ -87,6 +87,14 @@ RIPPLE_LIFE = 7  # 抓握涟漪寿命(帧); floatcube 负责老化, renderer 只
 # 只在**建立**抓取那一刻判定 —— 建立后跟手保持(双手缩放会把手拉出半径,
 # 中途脱手等于"捏着的东西自己滑掉"), 松开捏合才断。
 GRAB_RADIUS = 0.75
+# 抓着的手检测丢失的宽限帧数(≈250ms@30fps, 与 tracker 的 SLOT_TTL 同源)。
+# MediaPipe 在快速移动/翻腕遮挡时掉 1-3 帧检测是常态; 没有宽限的话, 掉一帧
+# 抓取就断, 手回来时早被拖出盒子半径 → 永远抓不回去, 体感"半路脱手"。
+GRAB_TTL = 8
+# 松开捏合需要连续这么多帧确认(建立仍是瞬时的 —— 响应优先, 断开保守)。
+# 拖动翻腕时拇指/食指尖被自己手背遮挡, landmark 单帧乱跳会把比值冲过
+# PINCH_OFF —— 那是误检不是松手。3 帧 = 100ms, 真实松手的延迟无感。
+PINCH_OFF_FRAMES = 3
 
 MODE_IDLE, MODE_TURN, MODE_MOVE = "idle", "turn", "move"
 
@@ -147,7 +155,9 @@ class FloatCube:
         # 先后顺序会随检测结果对调, 用下标存会把左手的拖动基准接到右手上, 一帧
         # 蹦出个几百 px 的假增量。
         self._pinch: dict[int, bool] = {}  # 每只手的捏合滞回状态
+        self._unpin: dict[int, int] = {}  # 松开确认计数(见 PINCH_OFF_FRAMES)
         self._grabbing: dict[int, bool] = {}  # 每只手"抓住盒子没"(捏合∧建立时在盒上)
+        self._grab_ttl: dict[int, int] = {}  # 检测丢手的抓取宽限(见 GRAB_TTL)
         self._grab: tuple[int, np.ndarray] | None = None  # 单手拖动: (手, 上帧捏合点)
         self._two: tuple[frozenset[int], np.ndarray, float] | None = None  # 双手: (手对, 中点, 距离)
         self._hold = 0  # 双手模式的剩余宽限帧
@@ -169,7 +179,9 @@ class FloatCube:
         self.explode = 0.0
         self.ripples.clear()
         self._pinch.clear()
+        self._unpin.clear()
         self._grabbing.clear()
+        self._grab_ttl.clear()
 
     @staticmethod
     def _key(index: int, hand: HandPose) -> int:
@@ -179,10 +191,20 @@ class FloatCube:
     def _pinching(self, keys: list[int], ratios: list[float]) -> list[bool]:
         out = []
         for k, r in zip(keys, ratios, strict=True):  # 同源于 use, 等长
-            self._pinch[k] = r < (PINCH_OFF if self._pinch.get(k, False) else PINCH_ON)
-            out.append(self._pinch[k])
+            was = self._pinch.get(k, False)
+            raw = r < (PINCH_OFF if was else PINCH_ON)
+            if was and not raw:
+                # 松开要连帧确认: 单帧尖峰(指尖被遮挡时 landmark 乱跳)不算松手
+                self._unpin[k] = self._unpin.get(k, 0) + 1
+                pin = self._unpin[k] < PINCH_OFF_FRAMES
+            else:
+                self._unpin[k] = 0
+                pin = raw
+            self._pinch[k] = pin
+            out.append(pin)
         for gone in set(self._pinch) - set(keys):  # 手离场就忘掉它, 别无限攒
             del self._pinch[gone]
+            self._unpin.pop(gone, None)
         return out
 
     def update(self, hands: list[HandPose], shape: tuple[int, int]) -> None:
@@ -214,8 +236,16 @@ class FloatCube:
                     self.ripples.append((cpt, 0))
             grabs.append(held)
             self._grabbing[k2] = held
-        for gone in set(self._grabbing) - set(keys):  # 手离场就忘掉它
-            del self._grabbing[gone]
+        for gone in set(self._grabbing) - set(keys):
+            if self._grabbing[gone] and self._grab_ttl.get(gone, GRAB_TTL) > 0:
+                # 检测短暂丢手: 抓取状态按 TTL 冻结保留, 手回来直接续上 ——
+                # 即使那时捏点已在盒子半径之外(建立过就不要求重新建立)。
+                self._grab_ttl[gone] = self._grab_ttl.get(gone, GRAB_TTL) - 1
+            else:
+                del self._grabbing[gone]
+                self._grab_ttl.pop(gone, None)
+        for k2 in keys:
+            self._grab_ttl.pop(k2, None)  # 手回来了, 宽限复位
         n = sum(grabs)
         self.marks = list(zip(pts, grabs, strict=True))
 
