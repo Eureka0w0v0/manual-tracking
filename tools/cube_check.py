@@ -397,6 +397,50 @@ def main() -> int:
         f"滞回捏合={still}, 掉 3 帧回来仍抓着={c._grabbing.get(9, False)}",
     )
 
+    # 24) 双手拧转 = 第三轴: 两手绕连线中点拧 90°, 立方体绕屏幕法线跟转,
+    #     z 轴本身纹丝不动(纯 roll, 不携带别的轴)。
+    c = FloatCube()
+    c.update(pair2(640, half=100, cy=456), SHAPE)  # 水平抓住(捏点即盒心高度)
+    for a in np.linspace(0.0, np.pi / 2, 31)[1:]:
+        dx, dy = 100 * np.cos(a), 100 * np.sin(a)
+        c.update(
+            [
+                hand(640 - dx, 456 - dy, pinch=True, tid=0),
+                hand(640 + dx, 456 + dy, pinch=True, tid=1),
+            ],
+            SHAPE,
+        )
+    ez = np.array([0.0, 0.0, 1.0], np.float32)
+    z_drift = float(np.linalg.norm(c.rot @ ez - ez))
+    twisted = rot_angle(np.eye(3, dtype=np.float32), c.rot)
+    good &= check(
+        "双手拧转走第三轴",
+        z_drift < 0.05 and 60.0 <= twisted <= 95.0,
+        f"两手拧 90° → 绕屏幕法线转 {twisted:.0f}° (RESP 滞后), z 轴漂移 {z_drift:.3f}",
+    )
+
+    # 25) 重力: 松手走抛物线, 落地反弹几次后躺平, 永不穿地板
+    c = FloatCube()
+    c.update([], SHAPE)
+    c.gravity = True
+    ys, vy_max = [], 0.0
+    for _ in range(150):
+        c.update([], SHAPE)
+        ys.append(float(c.pos[1]))
+        vy_max = max(vy_max, float(c._vel[1]))
+    floor = SHAPE[0] - c.size * 0.5
+    first = next(i for i, y in enumerate(ys) if y >= floor - 0.5)
+    bounce_h = floor - min(ys[first : first + 25])
+    good &= check(
+        "重力: 抛物线落地弹跳后躺平",
+        vy_max > 20.0
+        and bounce_h > 8.0
+        and max(ys) <= floor + 1e-3
+        and abs(ys[-1] - floor) < 0.6
+        and abs(ys[-1] - ys[-2]) < 0.2,
+        f"峰值落速 {vy_max:.0f}px/帧, 触底弹起 {bounce_h:.0f}px, 最终稳在地板 (不穿底)",
+    )
+
     print("\n" + ("全部通过" if good else "有不通过项"))
     return 0 if good else 1
 

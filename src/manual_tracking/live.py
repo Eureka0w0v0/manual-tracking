@@ -441,7 +441,8 @@ def run_live(
     print("  Q退出 | S风格 | D暗底 | R录制")
     print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限")
     print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线")
-    print("  cube  操作: 捏在盒上拖=转 | 双手捏在盒上=移动+缩放 | 张开手=炸开 | X 归位")
+    print("  cube  操作: 捏在盒上拖=转 | 双手捏住=移动+缩放+拧 | 张开手=炸开")
+    print("              F 重力开关 | X 归位")
     print("  通用调参: g h 通透  o p 底亮度")
     print("=" * 56)
 
@@ -579,6 +580,9 @@ def run_live(
                         np.clip(renderer.box.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
                     )
                     print(f"roll_resp → {renderer.box.roll_resp:.2f}")
+            if key in (ord("f"), ord("F")):  # cube: 重力模式(扔出去走抛物线)
+                renderer.cube.gravity = not renderer.cube.gravity
+                print(f"gravity → {'ON (F 关闭)' if renderer.cube.gravity else 'OFF'}")
             if key in (ord("x"), ord("X")):  # cube: 位姿归位(飘出画面 / 转乱了时用)
                 renderer.cube.reset()
                 print("cube reset")

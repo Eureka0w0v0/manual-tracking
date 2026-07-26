@@ -95,6 +95,15 @@ GRAB_TTL = 8
 # 拖动翻腕时拇指/食指尖被自己手背遮挡, landmark 单帧乱跳会把比值冲过
 # PINCH_OFF —— 那是误检不是松手。3 帧 = 100ms, 真实松手的延迟无感。
 PINCH_OFF_FRAMES = 3
+# ---- 双手拧转(第三轴 roll) ----
+# 拖动只能绕横/竖轴, 绕屏幕法线的 roll 靠双手"拧方向盘": 两手连线的角度
+# 变化 → 绕 z 转。端点必须按 track_id 排序固定 —— 两手在 hands[] 里的顺序
+# 会随帧对调, 不固定端点的话连线角单帧跳 π, 盒子瞬间甩半圈。
+TWIST_MAX_RAD = float(np.radians(30.0))  # 单帧拧转目标上限(挡单手误检瞬移)
+TWIST_MIN_DIST = 60.0  # 两手近于此不吃拧转 —— 基线太短, 角度全是噪声
+# ---- 重力(live F 键开关) ----
+GRAVITY_PX = 2.5  # px/帧²; 720 高度自由落体 ~0.8s, 扔出去走真抛物线
+REST_V = 2.0  # 触底后竖直反弹速度低于此 → 躺平, 不再无限微弹
 
 MODE_IDLE, MODE_TURN, MODE_MOVE = "idle", "turn", "move"
 
@@ -159,8 +168,9 @@ class FloatCube:
         self._grabbing: dict[int, bool] = {}  # 每只手"抓住盒子没"(捏合∧建立时在盒上)
         self._grab_ttl: dict[int, int] = {}  # 检测丢手的抓取宽限(见 GRAB_TTL)
         self._grab: tuple[int, np.ndarray] | None = None  # 单手拖动: (手, 上帧捏合点)
-        self._two: tuple[frozenset[int], np.ndarray, float] | None = None  # 双手: (手对, 中点, 距离)
+        self._two: tuple[frozenset[int], np.ndarray, float, float] | None = None  # (手对, 中点, 距离, 连线角)
         self._hold = 0  # 双手模式的剩余宽限帧
+        self.gravity = False  # live F 键: 重力模式(抛物线下坠, 落底弹跳滚停)
         # 下面两个是给 renderer 画反馈用的只读状态 —— 本模块自己不碰画布
         self.mode = MODE_IDLE
         self.marks: list[tuple[np.ndarray, bool]] = []  # (掌心, 这只手抓住盒子没)
@@ -263,13 +273,16 @@ class FloatCube:
         target_ex = float(np.clip((spread - EXPLODE_LO) / (EXPLODE_HI - EXPLODE_LO), 0.0, 1.0))
         self.explode += (target_ex - self.explode) * EXPLODE_RESP
 
-        if n >= 2:  # ---- 双手: 平移 + 缩放 ----
+        if n >= 2:  # ---- 双手: 平移 + 缩放 + 拧转 ----
             self._grab = None
             pair = frozenset(keys)
-            mid = (pts[0] + pts[1]) * 0.5
-            dist = float(np.linalg.norm(pts[1] - pts[0]))
+            # 端点按 key 排序(见 TWIST_MAX_RAD 的注释): 顺序对调 → 角跳 π
+            (_, pA), (_, pB) = sorted(zip(keys, pts, strict=True), key=lambda t: t[0])
+            mid = (pA + pB) * 0.5
+            dist = float(np.linalg.norm(pB - pA))
+            ang = float(np.arctan2(pB[1] - pA[1], pB[0] - pA[0]))
             if self._two is not None and self._two[0] == pair:  # 换了一双手就重新起算
-                _, pmid, pdist = self._two
+                _, pmid, pdist, pang = self._two
                 step = mid - pmid
                 self.pos += step  # 1:1: 两手中点走多远, 立方体走多远
                 self._vel = self._vel * 0.5 + step * 0.5  # 速度估计; 松手带走成惯性
@@ -282,11 +295,20 @@ class FloatCube:
                             CUBE_SIZE_MAX * min(h, w),
                         )
                     )
+                # 拧转(绕屏幕法线): 连线角增量走最短弧 → 目标角速度, 一阶惯性
+                # 与拖动同款手感。横竖两轴仍被双手锁死 —— 握住的物体只跟手拧。
+                twist = float(np.arctan2(np.sin(ang - pang), np.cos(ang - pang)))
+                twist = float(np.clip(twist, -TWIST_MAX_RAD, TWIST_MAX_RAD))
+                if dist < TWIST_MIN_DIST:
+                    twist = 0.0
+                self._spin[:2] *= GRIP_DAMP
+                self._spin[2] += (twist - self._spin[2]) * TURN_RESP
                 # 别让它被推出画面 —— 推出去就只能按 X 归位了
                 m = self.size * 0.5
                 self.pos = np.clip(self.pos, (m, m), (w - m, h - m)).astype(np.float32)
-            self._two = (pair, mid.copy(), dist)
-            self._spin *= GRIP_DAMP  # 双手握死: 残余旋转立刻锁住
+            else:
+                self._spin *= GRIP_DAMP  # 刚握上: 残余旋转锁住
+            self._two = (pair, mid.copy(), dist, ang)
             self._hold = TWO_HAND_HOLD
             self.mode = MODE_MOVE
         elif self._hold > 0:  # ---- 双手模式掉了一帧: 停住, 别掉去转动 ----
@@ -327,8 +349,12 @@ class FloatCube:
                 self._spin *= CARRY_MAX_RAD / sn
             self._spin[1] += self.drift * (1.0 - SPIN_DAMP)  # 稳态收敛到 drift
             # 平移动量: 滑行 + 碰壁反弹(越界分量反号×BOUNCE, 位置钳回画面)
+            if self.gravity:
+                self._vel[1] += GRAVITY_PX  # 重力: 松手就走抛物线
             v = float(np.linalg.norm(self._vel))
-            if v > MOVE_CARRY_MAX:  # 误检瞬移的速度不带走
+            if v > MOVE_CARRY_MAX and not self.gravity:
+                # 误检瞬移的速度不带走。重力模式不封顶 —— 高处落下的终速
+                # (~60px/帧)本来就该超过手甩的上限, 砍了就没有"坠感"。
                 self._vel *= MOVE_CARRY_MAX / v
                 v = MOVE_CARRY_MAX
             if v > 0.05:
@@ -338,7 +364,16 @@ class FloatCube:
                     if self.pos[ax] < m or self.pos[ax] > limit - m:
                         self._vel[ax] = -self._vel[ax] * BOUNCE
                 self.pos = np.clip(self.pos, (m, m), (w - m, h - m)).astype(np.float32)
-                self._vel *= MOVE_DAMP
+                if self.gravity:
+                    floor = h - m
+                    on_floor = self.pos[1] >= floor - 0.5
+                    if on_floor and abs(float(self._vel[1])) < REST_V:
+                        self._vel[1] = 0.0  # 反弹能量耗尽: 躺平, 不再无限微弹
+                        self.pos[1] = floor
+                    if on_floor:
+                        self._vel[0] *= MOVE_DAMP  # 地面摩擦滚停; 空中不减速(真空抛物线)
+                else:
+                    self._vel *= MOVE_DAMP
             # 缩放动量: 同款但短命 —— 尺寸是指数量, 拖长会滚雪球
             z = float(np.clip(self._zoom, -ZOOM_CARRY_MAX, ZOOM_CARRY_MAX))
             if abs(z) > 1e-4:
