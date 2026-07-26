@@ -111,10 +111,14 @@ COOL_START = 0.7  # 亮度低于此值开始变冷
 COOL_RATE = 1.8  # 变冷速度
 MIRROR_SHIFT = 0.35  # 折起的面采样点外移量(跨距比例)
 BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1080)
-# 盒子棱线宽度(px)。原片实测是 4px@1080p 的白线, 但那是"纸板盒"的粗描边;
-# 玻璃盒的六个面各有像素处理之后, 粗白线会压过面本身的质感。
+# 盒子棱线宽度(px); **0 = 完全不描边**。
+# 原片实测是 4px@1080p 的白线, 但那是"纸板盒"的粗描边; 玻璃盒的六个面各自
+# 有像素处理(riso/硬阈值/点云/四叉树/网点)之后, 白线会压过面本身的质感,
+# 面与面的交界靠颜色差异本身就读得出来, 更像一整块玻璃。
+# 去掉安全: 相邻面共享顶点, fillPoly 直接接上 —— 实测可见面之间的未覆盖
+# 缝隙占剪影 0.000%(中位/p90/最大都是 0), 不会露出底图。
 # mirror/banner 仍用 _edge_line 的默认 3px, 不受这个值影响。
-BOX_EDGE_W = 1
+BOX_EDGE_W = 0
 
 
 # ---- 手部几何 ----
@@ -399,7 +403,7 @@ class VectorOverlayRenderer:
         self.box.debug += "  " + ("+".join(v[2].tag for v in vis) or "-")
 
         if not vis:  # 盒高恰好为 0: 所有面零面积, 兜底描一条侧视细线
-            _edge_line(canvas, scr[0], scr[4], width=self.box_edge_w)
+            _edge_line(canvas, scr[0], scr[4], width=max(self.box_edge_w, 1))
             return
 
         for _, _fi, face in vis:
@@ -409,7 +413,10 @@ class VectorOverlayRenderer:
             if face.is_top:
                 self._glitch(canvas, frame_bgr, quad, seed)
 
-        # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)
+        # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)。
+        # 宽度 0 = 无缝模式, 直接跳过 —— cv2.line 收到 0 会当成 1px 画出来。
+        if self.box_edge_w <= 0:
+            return
         drawn: set[tuple[int, int]] = set()
         for _, _, face in vis:
             idx = face.verts

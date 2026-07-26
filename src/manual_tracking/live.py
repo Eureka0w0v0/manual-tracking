@@ -531,9 +531,9 @@ def run_live(
                 print(f"anchor_resp → {renderer.box.anchor_resp:.2f}")
             if key in (ord("{"), ord("}")):  # screen: 棱线粗细
                 renderer.box_edge_w = int(
-                    np.clip(renderer.box_edge_w + (1 if key == ord("}") else -1), 1, 8)
+                    np.clip(renderer.box_edge_w + (1 if key == ord("}") else -1), 0, 8)
                 )
-                print(f"box_edge_w → {renderer.box_edge_w}")
+                print(f"box_edge_w → {renderer.box_edge_w}{' (无缝)' if renderer.box_edge_w == 0 else ''}")
             if key in (ord("<"), ord(">")):  # screen: 双手多近才收起
                 up = key == ord(">")
                 renderer.box.gap_shut = float(
