@@ -20,6 +20,8 @@ import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
+from .landmarks import INDEX_MCP, PINKY_MCP, WRIST
+
 # One Euro 参数(像素单位, 30fps 实测甜点)
 OE_MIN_CUTOFF = 1.0  # Hz, 主调静止残噪(嫌抖降 0.6, 嫌拖影升 1.5)
 OE_BETA = 0.04  # 速度增益, 主调运动滞后(甜点区 0.03-0.05)
@@ -88,17 +90,20 @@ class HandTracker:
         min_detection_confidence: float = 0.4,
         min_presence_confidence: float = 0.4,
         min_tracking_confidence: float = 0.4,
-        smooth: float = 0.55,
+        filter_on: bool = True,
         infer_max_side: int = 0,
     ) -> None:
         """
-        smooth:
-          <=0 关闭时域滤波(裸输出); >0 启用 One Euro(数值本身不再是 EMA 系数)
+        filter_on:
+          One Euro 时域滤波开关。滤波强度由模块级 OE_* 常量决定, 不是每次调用
+          传进来的——早先这里是个 float `smooth`, 但自从换成 One Euro 之后
+          数值就只被拿来跟 0 比大小了(One Euro 的截止频率随速度自适应, 没有
+          "一个 EMA 系数"可调)。留着 float 只会让人以为能调强度。
         infer_max_side:
           0 = 全帧推理(实测 Apple Silicon 上最快且尾部误差最小)
           >0 = 按最长边降采样(仅在推理确实过慢的机器上使用)
         """
-        self.smooth = float(np.clip(smooth, 0.0, 0.95))
+        self.filter_on = bool(filter_on)
         self.infer_max_side = max(0, int(infer_max_side))
         self._slots: list[_Slot] = []
         self._next_id = 0
@@ -133,7 +138,7 @@ class HandTracker:
         两手时做 2x2 最优指派(总距离最小), 消除贪心的顺序依赖;
         门限随掌宽自适应, 杜绝 300px 级跨手误配。
         """
-        if self.smooth <= 0:
+        if not self.filter_on:
             return [(p, -1) for p in pts_list]
 
         old = self._slots
@@ -141,10 +146,10 @@ class HandTracker:
         if pts_list and old:
 
             def d(k: int, j: int) -> float:
-                return float(np.linalg.norm(pts_list[k][0, :2] - old[j].x[0, :2]))
+                return float(np.linalg.norm(pts_list[k][WRIST, :2] - old[j].x[WRIST, :2]))
 
             def lim(j: int) -> float:
-                palm = float(np.linalg.norm(old[j].x[5, :2] - old[j].x[17, :2]))
+                palm = float(np.linalg.norm(old[j].x[INDEX_MCP, :2] - old[j].x[PINKY_MCP, :2]))
                 return max(MATCH_PALM_SCALE * palm, MATCH_MIN_PX)
 
             if len(pts_list) == 2 and len(old) == 2:
@@ -164,7 +169,7 @@ class HandTracker:
                     uk.add(k)
                     uj.add(j)
 
-        out: list[tuple[np.ndarray, int] | None] = [None] * len(pts_list)
+        out: dict[int, tuple[np.ndarray, int]] = {}
         matched = {j for _, j in pairs}
         keep_slots: list[_Slot] = []
         for k, j in pairs:
@@ -175,13 +180,13 @@ class HandTracker:
             if j not in matched and ts_ms - s.t_ms <= SLOT_TTL_MS:
                 keep_slots.append(s)
         for k in range(len(pts_list)):
-            if out[k] is None:
+            if k not in out:  # 没配上任何旧轨迹 → 开一条新的, 当帧不滤波
                 s = _Slot(self._next_id, pts_list[k], ts_ms)
                 self._next_id += 1
                 keep_slots.append(s)
                 out[k] = (pts_list[k], s.sid)
         self._slots = keep_slots
-        return out  # type: ignore[return-value]
+        return [out[k] for k in range(len(pts_list))]
 
     def process_bgr(self, frame_bgr: np.ndarray, frame_index: int, timestamp_ms: int) -> FrameHands:
         h, w = frame_bgr.shape[:2]

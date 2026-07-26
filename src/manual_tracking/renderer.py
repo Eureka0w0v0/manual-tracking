@@ -31,6 +31,7 @@ wire — 纯骨架调试。
 from __future__ import annotations
 
 import random
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -319,6 +320,8 @@ RED_CMAP = _duotone_cmap(BANNER_R_DARK, BANNER_RED, BANNER_THRESH)
 XRAY_CMAP = _xray_cmap()
 
 # ---- 每面的像素处理(effect): src_bgr → out_bgr, 同尺寸 ----
+# 所有 _fx_* 都是"参数 → 处理函数"的工厂, 处理函数满足这个签名:
+FaceEffect = Callable[[np.ndarray], np.ndarray]
 # 原片实测结论(逐像素, 帧 264/288):
 #   · 面内是真正的 gradient map, 不是平涂——绿前面 BGR 三通道都跑满 0~255,
 #     亮度 std 34; 蓝顶面 B 148~255 / G 23~155 / R 27~122
@@ -329,7 +332,7 @@ XRAY_CMAP = _xray_cmap()
 # 的风格语汇(浮雕线稿 / 半调网点 / 全息扫描线)。
 
 
-def _fx_lut(lut: np.ndarray, split: int = 0):
+def _fx_lut(lut: np.ndarray, split: int = 0) -> FaceEffect:
     """gradient map; split>0 时附加横向色差(R 右移、B 左移)."""
 
     def fn(src: np.ndarray) -> np.ndarray:
@@ -342,7 +345,7 @@ def _fx_lut(lut: np.ndarray, split: int = 0):
     return fn
 
 
-def _fx_poster(lut: np.ndarray, levels: int):
+def _fx_poster(lut: np.ndarray, levels: int) -> FaceEffect:
     """gradient map + 色阶断层: 先把灰度量化成 levels 级再查表 → 版画式硬边。
 
     量化在**查表前**做, 所以断层落在 LUT 的采样点上, 每一级都是 LUT 上的一个
@@ -360,7 +363,7 @@ def _fx_poster(lut: np.ndarray, levels: int):
     return fn
 
 
-def _fx_scan(lut: np.ndarray, period: int, depth: float):
+def _fx_scan(lut: np.ndarray, period: int, depth: float) -> FaceEffect:
     """gradient map + 全息扫描线: 每 period 行压暗 depth.
 
     只对 1/period 的行做原地缩放(切片是视图), 不是整幅乘一个列向量——后者
@@ -380,7 +383,7 @@ def _fx_scan(lut: np.ndarray, period: int, depth: float):
 _EMBOSS_K = np.array([[-1, 0, 0], [0, 0, 0], [0, 0, 1]], np.float32)
 
 
-def _fx_emboss(base: float, gain: float, tint: tuple[float, float, float]):
+def _fx_emboss(base: float, gain: float, tint: tuple[float, float, float]) -> FaceEffect:
     """浮雕线稿: 对角差分 + 常数底 → 白色浅浮雕(端面读作"截面").
 
     差分值域是 [-255,255], 所以整条 base+gain*d 曲线预算成 511 项查表; 染色
@@ -407,7 +410,7 @@ def _halftone_thresh(cell: int) -> np.ndarray:
     return np.clip(1.0 - r * r, 0.0, 1.0)
 
 
-def _fx_halftone(cell: int, paper: tuple[int, int, int], ink: tuple[int, int, int]):
+def _fx_halftone(cell: int, paper: tuple[int, int, int], ink: tuple[int, int, int]) -> FaceEffect:
     """半调网点: 亮度低于"到中心距离"阈值的像素上墨 → 点随暗部长大.
 
     平铺阈值图**按需增长后长期复用**, 每帧只做一次切片(视图, 免费)+ 一次
@@ -439,7 +442,7 @@ def _fx_halftone(cell: int, paper: tuple[int, int, int], ink: tuple[int, int, in
 #   x: 0=左端 1=右端 / u: 0=下 1=上 / w: 0=前(贴指弧) 1=后(远离镜头)
 # 绕序无所谓——外法线在运行时用"面心 − 体心"定向, 不靠手工排 CCW。
 # 六个面六种处理, 彼此一眼可分:
-_BOX_FACES: tuple[tuple[tuple[int, int, int, int], object], ...] = (
+_BOX_FACES: tuple[tuple[tuple[int, int, int, int], FaceEffect], ...] = (
     ((0, 4, 6, 2), _fx_poster(GREEN_LUT, POSTER_LEVELS)),  # 前面: 绿 + 色阶断层
     ((1, 5, 7, 3), _fx_lut(RED_LUT, split=RED_SPLIT_PX)),  # 背面: 红 + 色差(原片实测)
     ((0, 4, 5, 1), _fx_scan(XRAY_CMAP, SCAN_PERIOD, SCAN_DEPTH)),  # 底面: X光 + 扫描线
@@ -489,50 +492,33 @@ def _poly_window(
     return canvas[y0:y1, x0:x1], frame_bgr[sy : sy + bh, sx : sx + bw], mask, (x0, y0)
 
 
-def _cmap_fill(
+def _fill(
     canvas: np.ndarray,
     frame_bgr: np.ndarray,
     poly: np.ndarray,
-    cmap: np.ndarray,
+    fx: FaceEffect,
     shift: tuple[float, float] = (0.0, 0.0),
 ) -> None:
-    """不透明填充: face = cmap[背景亮度(uv+shift)]."""
+    """把 poly 围出的区域填成 fx(背景窗口(uv+shift)) —— 三种风格唯一的上色出口.
+
+    早先有 _cmap_fill / _fx_fill / _mirror_fill 三个函数, 骨架逐字相同、只有
+    "怎么把 src 变成颜色"那一行不同。现在那一行外提成 FaceEffect, 三合一。
+    """
     got = _poly_window(canvas, frame_bgr, poly, shift)
     if got is None:
         return
     roi, src, mask, _ = got
-    gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-    cv2.copyTo(cv2.applyColorMap(gray, cmap), mask, roi)
+    cv2.copyTo(np.ascontiguousarray(fx(src)), mask, roi)
 
 
-def _fx_fill(
-    canvas: np.ndarray,
-    frame_bgr: np.ndarray,
-    poly: np.ndarray,
-    fx: object,
-    shift: tuple[float, float] = (0.0, 0.0),
-) -> None:
-    """按面的 effect 函数填充: face = fx(背景窗口(uv+shift))."""
-    got = _poly_window(canvas, frame_bgr, poly, shift)
-    if got is None:
-        return
-    roi, src, mask, _ = got
-    cv2.copyTo(np.ascontiguousarray(fx(src)), mask, roi)  # type: ignore[operator]
+def _fx_mirror(cool: float) -> FaceEffect:
+    """反相镜面: 逐通道 LUT, 平贴时 shift≈0 → 背景以负片鬼影透出."""
+    lut = _mirror_lut(cool)
 
+    def fn(src: np.ndarray) -> np.ndarray:
+        return cv2.LUT(src, lut)
 
-def _mirror_fill(
-    canvas: np.ndarray,
-    frame_bgr: np.ndarray,
-    poly: np.ndarray,
-    shift: tuple[float, float],
-    cool: float,
-) -> None:
-    """反相镜面填充(不透明, 逐通道): 平贴时 shift≈0 → 背景以负片鬼影透出."""
-    got = _poly_window(canvas, frame_bgr, poly, shift)
-    if got is None:
-        return
-    roi, src, mask, _ = got
-    cv2.copyTo(cv2.LUT(src, _mirror_lut(cool)), mask, roi)
+    return fn
 
 
 class VectorOverlayRenderer:
@@ -573,15 +559,25 @@ class VectorOverlayRenderer:
         new = canon_style(name)
         if new != self._style:
             self._style = new
-            self._reset_state()
+            self._reset_box()  # 角色滞回与风格无关, 不该跟着清
 
-    def _reset_state(self) -> None:
-        """清掉全部跨帧状态(手离场/合拢/切风格). 下一帧当作冷启动."""
+    def _reset_box(self) -> None:
+        """只清 screen 的盒子状态. 双手合拢/切风格时用。
+
+        **不碰 _role_ids** —— 那是三种风格共用的左右手角色滞回, 由 _ordered
+        维护。早先版本一并清掉, 于是双手合拢的每一帧都在重置角色滞回, 而
+        ROLE_HYST_PX 的存在理由恰恰就是"防双手并拢时角色逐帧翻转"——护栏
+        在最该生效的场景里被自己关掉了。
+        """
         self._box_ema = None
         self._psi_rate = 0.0
         self._b0_prev = None
-        self._role_ids = None
         self.box_debug = ""
+
+    def _reset_state(self) -> None:
+        """清掉全部跨帧状态(手离场). 下一帧当作冷启动."""
+        self._reset_box()
+        self._role_ids = None
 
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
         if self.show_source:
@@ -690,7 +686,7 @@ class VectorOverlayRenderer:
             # 折起的面: 镜面采样点沿跨距方向外移, 采到别处(亮墙反相成暗面)
             shift_v = u * (side * (1.0 - b) * MIRROR_SHIFT * span)
             cool = float(np.clip((COOL_START - b) * COOL_RATE, 0.0, 1.0))
-            _mirror_fill(canvas, frame_bgr, poly, (float(shift_v[0]), float(shift_v[1])), cool)
+            _fill(canvas, frame_bgr, poly, _fx_mirror(cool), (float(shift_v[0]), float(shift_v[1])))
             pr = np.round(poly).astype(np.int32)
             # 描边只描自由边(整面轮廓), 附 ±2px 色差晕
             cv2.polylines(canvas, [pr + (2, 1)], True, FRINGE_WARM, 1, cv2.LINE_AA)
@@ -729,10 +725,10 @@ class VectorOverlayRenderer:
         span_v = gR - gL
         span = float(np.linalg.norm(span_v))
         if span < MIN_SPAN_PX:
-            # 双手合拢: 清掉滤波历史。否则再张开时 ψ 从旧值继续插值, 且
+            # 双手合拢: 清掉盒子的滤波历史。否则再张开时 ψ 从旧值继续插值, 且
             # _psi_rate 还留着上次的大角速度 → 恢复的头几帧 k 贴在
             # BOX_ROLL_RESP_MAX 上, 滤波形同虚设。
-            self._reset_state()
+            self._reset_box()
             return None
 
         # 长轴深度分量: 掌宽比 → 单目深度线索(哪只手更近就更大)。
@@ -833,7 +829,7 @@ class VectorOverlayRenderer:
         # 外法线用"面心 − 体心"定向, 免去手工排 CCW 的符号坑。
         eye = np.array([0.0, 0.0, focal], np.float32)
         center = cam.mean(axis=0)
-        vis: list[tuple[float, int, tuple[int, int, int, int], object]] = []
+        vis: list[tuple[float, int, tuple[int, int, int, int], FaceEffect]] = []
         for fi, (idx, fx) in enumerate(_BOX_FACES):
             q = cam[list(idx)]
             n = np.cross(q[1] - q[0], q[2] - q[0])
@@ -857,7 +853,7 @@ class VectorOverlayRenderer:
         for _, fi, idx, fx in vis:
             quad = scr[list(idx)]
             shift = (0.0, BOX_SAMPLE_K * length) if fi == _BOX_TOP_FACE else (0.0, 0.0)
-            _fx_fill(canvas, frame_bgr, quad, fx, shift)
+            _fill(canvas, frame_bgr, quad, fx, shift)
             if fi == _BOX_TOP_FACE:
                 self._glitch(canvas, frame_bgr, quad, seed)
 
@@ -911,10 +907,10 @@ class VectorOverlayRenderer:
 
         # 实测分层: 黄头带 / X-ray 中窗(左右内缩7%) / 白分隔线 / 悬出的红脚带
         mid = band(0.20, 0.94, 0.07, 0.93)
-        _cmap_fill(canvas, frame_bgr, mid, XRAY_CMAP)
-        _cmap_fill(canvas, frame_bgr, band(0.0, 0.20), YELLOW_CMAP)
-        _cmap_fill(canvas, frame_bgr, band(0.94, 1.02), WHITE_CMAP)
-        _cmap_fill(canvas, frame_bgr, band(1.02, 1.28), RED_CMAP)
+        _fill(canvas, frame_bgr, mid, _fx_lut(XRAY_CMAP))
+        _fill(canvas, frame_bgr, band(0.0, 0.20), _fx_lut(YELLOW_CMAP))
+        _fill(canvas, frame_bgr, band(0.94, 1.02), _fx_lut(WHITE_CMAP))
+        _fill(canvas, frame_bgr, band(1.02, 1.28), _fx_lut(RED_CMAP))
         # 中窗左右侧缘的黄色细线(原效果唯一的"描边")
         _edge_line(canvas, mid[0], mid[3], BANNER_YELLOW, 2)
         _edge_line(canvas, mid[1], mid[2], BANNER_YELLOW, 2)

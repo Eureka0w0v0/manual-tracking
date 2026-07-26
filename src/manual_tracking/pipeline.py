@@ -8,17 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-import numpy as np
 
+from .paths import MODEL_URL, default_model_path
 from .renderer import VectorOverlayRenderer
 from .tracker import HandTracker
-
-
-def default_model_path() -> Path:
-    here = Path(__file__).resolve()
-    # src/manual_tracking/pipeline.py -> repo root
-    root = here.parents[2]
-    return root / "models" / "hand_landmarker.task"
 
 
 def export_landmarks_json(
@@ -64,7 +57,7 @@ def process_video(
     style: str = "mirror",
     show_source: bool = True,
     source_dim: float = 0.35,
-    smooth: float = 0.55,
+    filter_on: bool = True,
     max_frames: int | None = None,
     progress: bool = True,
 ) -> Path:
@@ -79,9 +72,7 @@ def process_video(
     model = Path(model_path) if model_path else default_model_path()
     if not model.exists():
         raise FileNotFoundError(
-            f"Hand landmarker model missing: {model}\n"
-            "Download: https://storage.googleapis.com/mediapipe-models/"
-            "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+            f"Hand landmarker model missing: {model}\nDownload: {MODEL_URL}"
         )
 
     renderer = VectorOverlayRenderer(
@@ -94,7 +85,7 @@ def process_video(
     frame_count = 0
     fps_out = 30.0
 
-    with HandTracker(model, smooth=smooth) as tracker:
+    with HandTracker(model, filter_on=filter_on) as tracker:
         for frame, hands, fps in tracker.iter_video(input_path):
             fps_out = fps
             rendered = renderer.render(frame, hands)

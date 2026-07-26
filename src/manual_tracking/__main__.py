@@ -6,7 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .pipeline import default_model_path, export_landmarks_json, process_video
+from .paths import default_model_path
+from .pipeline import export_landmarks_json, process_video
 from .live import run_live
 from .renderer import STYLE_ALIASES, STYLES
 
@@ -30,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--no-source", action="store_true", help="Black bg, no source video")
     run.add_argument("--source-dim", type=float, default=0.35, help="Source dim factor 0-1")
-    run.add_argument("--smooth", type=float, default=0.55, help="Landmark temporal smooth 0-0.95")
+    run.add_argument("--no-filter", action="store_true", help="关闭 One Euro 时域滤波(裸 landmark)")
     run.add_argument("--max-frames", type=int, default=None, help="Debug: only first N frames")
 
     dump = sub.add_parser("dump", help="Export per-frame landmarks JSON")
@@ -54,9 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument("--no-source", action="store_true", help="Black bg, hide camera image")
     live.add_argument("--source-dim", type=float, default=0.55, help="Camera dim 0-1")
-    live.add_argument(
-        "--smooth", type=float, default=0.45, help="时域滤波开关: 0=关闭, >0=One Euro"
-    )
+    live.add_argument("--no-filter", action="store_true", help="关闭 One Euro 时域滤波(裸 landmark)")
     live.add_argument("--no-mirror", action="store_true", help="Disable mirror")
     live.add_argument("--width", type=int, default=1920, help="采集宽 (默认 1920)")
     live.add_argument("--height", type=int, default=1080, help="采集高 (默认 1080)")
@@ -89,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             style=args.style,
             show_source=not args.no_source,
             source_dim=args.source_dim,
-            smooth=args.smooth,
+            filter_on=not args.no_filter,
             max_frames=args.max_frames,
         )
         print(f"wrote {out}")
@@ -107,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
             style=args.style,
             show_source=not args.no_source,
             source_dim=args.source_dim,
-            smooth=args.smooth,
+            filter_on=not args.no_filter,
             mirror=not args.no_mirror,
             width=args.width,
             height=args.height,

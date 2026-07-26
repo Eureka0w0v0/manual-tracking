@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .pipeline import default_model_path
+from .paths import default_model_path, default_output_dir
 from .renderer import STYLES, VectorOverlayRenderer
 from .tracker import FrameHands, HandPose, HandTracker
 
@@ -249,7 +249,7 @@ def run_live(
     style: str = "mirror",
     show_source: bool = True,
     source_dim: float = 0.65,
-    smooth: float = 0.35,
+    filter_on: bool = True,
     mirror: bool = True,
     width: int = 1920,
     height: int = 1080,
@@ -277,7 +277,7 @@ def run_live(
     # 资源需要回收(否则摄像头会被占着直到进程退出)。
     tracker = HandTracker(
         model,
-        smooth=smooth,
+        filter_on=filter_on,
         num_hands=2,
         infer_max_side=infer_size,
         min_detection_confidence=0.45,
@@ -450,7 +450,7 @@ def run_live(
             if key in (ord("r"), ord("R")):
                 if not recording:
                     if record_path is None:
-                        out_dir = Path(__file__).resolve().parents[2] / "output"
+                        out_dir = default_output_dir()
                         out_dir.mkdir(parents=True, exist_ok=True)
                         record_path = out_dir / f"live_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
                     hh, ww = out.shape[:2]
