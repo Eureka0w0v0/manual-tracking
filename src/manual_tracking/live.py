@@ -74,6 +74,128 @@ def _refps(path: Path, fps: float) -> bool:
         return False
 
 
+
+class _Recorder:
+    """录制状态机: 开/关、写帧、停录后按真实帧率修容器.
+
+    从 run_live 里抽出来的六个局部变量(writer/recording/record_path/rec_frames/
+    rec_t0/fps_rec)——它们跟"实时循环"没关系, 只是恰好被 R 键触发。
+
+    帧率有两道坎, 都踩过:
+      1. 开录时 fps_ema 可能还没热身好(首帧含模型加载 133ms, 瞬时 FPS 只有 ~6,
+         而它会播种 EMA)。实测启动第 1 帧按 R 会把容器帧率写成 10fps → 成片
+         慢放 67%。所以未热身时直接退回 30。
+      2. 容器帧率开录时就写死了, 但真实平均帧率只有录完才知道(低光下摄像头会
+         自动降到 15fps → 成片快放 2x)。停录时实测偏差 >5% 就用 ffmpeg 重封装。
+    """
+
+    def __init__(self, path: str | Path | None) -> None:
+        self.path: Path | None = Path(path) if path else None
+        self.writer: cv2.VideoWriter | None = None
+        self.on = False
+        self._frames = 0
+        self._t0 = 0.0
+        self._fps = 30.0
+
+    def write(self, frame: np.ndarray) -> None:
+        if self.on and self.writer is not None:
+            self.writer.write(frame)
+            self._frames += 1
+
+    def toggle(self, frame: np.ndarray, fps_ema: float, warm: bool) -> None:
+        self.stop() if self.on else self.start(frame, fps_ema, warm)
+
+    def start(self, frame: np.ndarray, fps_ema: float, warm: bool) -> None:
+        if self.path is None:
+            out_dir = default_output_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self.path = out_dir / f"live_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        h, w = frame.shape[:2]
+        self._fps = float(np.clip(fps_ema, 10.0, 60.0)) if warm else 30.0
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(self.path), fourcc, self._fps, (w, h))
+        if not writer.isOpened():
+            print("无法开始录制")
+            return
+        self.writer = writer
+        self.on = True
+        self._frames = 0
+        self._t0 = time.perf_counter()
+        print(f"REC start → {self.path}  ({self._fps:.1f} fps)")
+
+    def stop(self) -> None:
+        if not self.on:
+            return
+        self.on = False
+        path, frames = self.path, self._frames
+        self.release()
+        dur = time.perf_counter() - self._t0
+        real = frames / max(dur, 1e-6)
+        # 太短的录制不做帧率修正: 样本不足时 real 会算出荒谬值(实测 20 帧
+        # 瞬间写完 → 1359 fps), 拿它去改容器只会把好文件改坏。
+        if path and dur >= REC_MIN_SEC and abs(real - self._fps) / self._fps > 0.05:
+            fixed = _refps(path, real)
+            print(
+                f"REC 帧率修正 {self._fps:.1f} → {real:.1f} fps"
+                f"{'' if fixed else ' (需要 ffmpeg, 已跳过)'}"
+            )
+        print(f"REC stop → {path}  ({frames} 帧)")
+        self.path = None
+
+    def release(self) -> None:
+        """只放句柄, 不做帧率修正 —— finally 里用, 那时不该再跑子进程."""
+        if self.writer is not None:
+            self.writer.release()
+            self.writer = None
+
+
+
+REC_MIN_SEC = 1.0  # 短于此的录制不做帧率修正(样本不足, 实测值会荒谬)
+HUD_BAR_H = 34  # HUD 黑条高度(px)
+HUD_REC_DOT = 7  # 录制红点半径(px)
+
+
+def _draw_hud(
+    out: np.ndarray,
+    renderer: VectorOverlayRenderer,
+    rec: "_Recorder",
+    fps_ema: float,
+    detect_ms: float,
+    draw_ms_ema: float,
+    hands: FrameHands,
+    detector: "_AsyncHandDetector",
+) -> None:
+    """顶部状态条. 纯展示, 不改任何状态 —— 数值计算留在主循环里."""
+    n_err = detector.errors()
+    hud = (
+        f"FPS {fps_ema:5.1f}  det {detect_ms:5.1f}ms  "
+        f"draw {draw_ms_ema:4.1f}ms  hands:{len(hands.hands)}  "
+        f"{renderer.style}  {'busy' if detector.busy() else 'idle'}"
+        f"{f'  ERR{n_err}' if n_err else ''}"
+        f"{'  REC' if rec.on else ''}"
+    )
+    if renderer.box_debug:  # 只有 screen 会写它, 不必判 style
+        # psi = 盒子绕长轴的角, oL/oR = 双手掌面朝向(驱动 roll 的原始信号)
+        b = renderer.box
+        hud += (
+            f"  expo {b.roll_expo:.1f}  lift {b.anchor_lift:.2f}  bias {b.depth_bias:.2f}"
+            f"  resp {b.roll_resp:.2f}  cap {b.roll_max_rate:.0f}  {renderer.box_debug}"
+        )
+    cv2.rectangle(out, (0, 0), (out.shape[1], HUD_BAR_H), (0, 0, 0), -1)
+    cv2.putText(
+        out,
+        hud,
+        (10, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 255, 200) if rec.on else (230, 230, 230),
+        1,
+        cv2.LINE_AA,
+    )
+    if rec.on:
+        cv2.circle(out, (out.shape[1] - 24, 16), HUD_REC_DOT, (0, 0, 255), -1)
+
+
 def _open_camera(camera: int, width: int, height: int) -> cv2.VideoCapture:
     backends = []
     if hasattr(cv2, "CAP_AVFOUNDATION"):
@@ -300,12 +422,7 @@ def run_live(
         window_name, int(actual_w * window_scale), int(actual_h * window_scale)
     )
 
-    writer: cv2.VideoWriter | None = None
-    recording = False
-    record_path: Path | None = Path(record) if record else None
-    rec_frames = 0
-    rec_t0 = 0.0
-    fps_rec = 30.0
+    rec = _Recorder(record)
 
     print("=" * 56)
     print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / TD横幅")
@@ -370,41 +487,9 @@ def run_live(
                 fps_ema = inst if fps_ema <= 1e-3 else fps_ema * 0.85 + inst * 0.15
 
             # 录制在画 HUD 之前，成片不带黑条和状态文字
-            if recording and writer is not None:
-                writer.write(out)
-                rec_frames += 1
+            rec.write(out)
 
-            n_hands = len(hands.hands)
-            busy = "busy" if detector.busy() else "idle"
-            n_err = detector.errors()
-            hud = (
-                f"FPS {fps_ema:5.1f}  det {detect_ms:5.1f}ms  "
-                f"draw {draw_ms_ema:4.1f}ms  hands:{n_hands}  "
-                f"{styles[style_idx]}  {busy}"
-                f"{f'  ERR{n_err}' if n_err else ''}"
-                f"{'  REC' if recording else ''}"
-            )
-            if renderer.style == "screen" and renderer.box_debug:
-                # psi = 盒子绕长轴的角, oL/oR = 双手掌面朝向(驱动 roll 的原始信号)
-                hud += (
-                    f"  expo {renderer.box.roll_expo:.1f}  lift {renderer.box.anchor_lift:.2f}"
-                    f"  bias {renderer.box.depth_bias:.2f}  resp {renderer.box.roll_resp:.2f}"
-                    f"  cap {renderer.box.roll_max_rate:.0f}  {renderer.box_debug}"
-                )
-            cv2.rectangle(out, (0, 0), (out.shape[1], 34), (0, 0, 0), -1)
-            cv2.putText(
-                out,
-                hud,
-                (10, 24),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 200) if recording else (230, 230, 230),
-                1,
-                cv2.LINE_AA,
-            )
-
-            if recording:
-                cv2.circle(out, (out.shape[1] - 24, 16), 7, (0, 0, 255), -1)
+            _draw_hud(out, renderer, rec, fps_ema, detect_ms, draw_ms_ema, hands, detector)
 
             cv2.imshow(window_name, out)
             key = cv2.waitKey(1) & 0xFF
@@ -448,42 +533,7 @@ def run_live(
                 )
                 print(f"roll_resp → {renderer.box.roll_resp:.2f}")
             if key in (ord("r"), ord("R")):
-                if not recording:
-                    if record_path is None:
-                        out_dir = default_output_dir()
-                        out_dir.mkdir(parents=True, exist_ok=True)
-                        record_path = out_dir / f"live_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
-                    hh, ww = out.shape[:2]
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    # 用实测 FPS 录制，避免快放/慢放（EMA 还没热身好就退回 30）
-                    warm = frame_index >= FPS_WARMUP_FRAMES + 10
-                    fps_rec = float(np.clip(fps_ema, 10.0, 60.0)) if warm else 30.0
-                    writer = cv2.VideoWriter(str(record_path), fourcc, fps_rec, (ww, hh))
-                    if not writer.isOpened():
-                        print("无法开始录制")
-                        writer = None
-                    else:
-                        recording = True
-                        rec_frames = 0
-                        rec_t0 = time.perf_counter()
-                        print(f"REC start → {record_path}  ({fps_rec:.1f} fps)")
-                else:
-                    recording = False
-                    if writer is not None:
-                        writer.release()
-                        writer = None
-                        # 容器帧率在开录时就写死了, 但真实平均帧率只有录完才知道
-                        # (低光下摄像头会自动降到 15fps → 成片快放 2x)。实测偏差
-                        # 超过 5% 就用 ffmpeg 按真实帧率重封装, 没有 ffmpeg 则只提示。
-                        real = rec_frames / max(time.perf_counter() - rec_t0, 1e-6)
-                        if record_path and abs(real - fps_rec) / fps_rec > 0.05:
-                            fixed = _refps(record_path, real)
-                            print(
-                                f"REC 帧率修正 {fps_rec:.1f} → {real:.1f} fps"
-                                f"{'' if fixed else ' (需要 ffmpeg, 已跳过)'}"
-                            )
-                    print(f"REC stop → {record_path}  ({rec_frames} 帧)")
-                    record_path = None
+                rec.toggle(out, fps_ema, frame_index >= FPS_WARMUP_FRAMES + 10)
 
             frame_index += 1
     finally:
@@ -492,7 +542,7 @@ def run_live(
         # moov box 的坏 mp4(实测 未 release 1.31MB 打不开 / release 后 1.56MB 正常)。
         # 每个 release 各自 try, 一个失败不拖累其余。
         for label, fn in (
-            ("writer", (lambda: writer.release()) if writer is not None else None),
+            ("writer", rec.release),
             ("camera", cap.release),
             ("window", cv2.destroyAllWindows),
         ):
