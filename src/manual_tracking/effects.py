@@ -466,11 +466,11 @@ class Face(NamedTuple):
 # 六个面六种处理, 彼此一眼可分。前三个的配色/映射有原片逐像素实测背书,
 # 后三个(底/两端)原片几乎没露过, 取自用户 hand-frame-glitch 项目的风格语汇。
 BOX_FACES: tuple[Face, ...] = (
-    Face("前", (0, 4, 6, 2), _fx_poster(GREEN_LUT, POSTER_LEVELS)),
-    Face("背", (1, 5, 7, 3), _fx_lut(RED_LUT, split=RED_SPLIT_PX)),
-    Face("底", (0, 4, 5, 1), _fx_scan(XRAY_CMAP, SCAN_PERIOD, SCAN_DEPTH)),
+    Face("前", (0, 4, 6, 2), _fx_riso(RISO_DARK, RISO_LIGHT, RISO_THRESH, RISO_SPLIT, RISO_DITHER)),
+    Face("背", (1, 5, 7, 3), _fx_duotone(DUOTONE_DARK, DUOTONE_LIGHT, DUOTONE_THRESH)),
+    Face("底", (0, 4, 5, 1), _fx_pointcloud(PC_CELL, PC_GAIN, PC_FLOOR, PC_GLOW, PC_TINT)),
     Face("顶", (2, 6, 7, 3), _fx_lut(BLUE_LUT), is_top=True),
-    Face("左", (0, 2, 3, 1), _fx_emboss(EMBOSS_BASE, EMBOSS_GAIN, EMBOSS_TINT)),
+    Face("左", (0, 2, 3, 1), _fx_quadtree(QUAD_MIN_CELL, QUAD_MAX_DEPTH, QUAD_VAR, QUAD_LINE)),
     Face("右", (4, 6, 7, 5), _fx_halftone(HALFTONE_CELL, HALFTONE_PAPER, HALFTONE_INK)),
 )
 
