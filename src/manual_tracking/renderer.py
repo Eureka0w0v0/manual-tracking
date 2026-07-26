@@ -209,6 +209,43 @@ def _fill(
     cv2.copyTo(out, mask, roi)
 
 
+def _split_faces(cam: np.ndarray, focal: float) -> tuple[list[Face], list[Face]]:
+    """可见面 / 背向面(内壁), 各自按深度由远及近排序.
+
+    面可见性 = 外法线朝向视点(凸体, 物理正确, 不是 2D 绕序启发式); 外法线用
+    "面心 − 体心"定向, 免去手工排 CCW 的符号坑。由远及近画: 先内壁再正向面,
+    玻璃的"透"就来自这个顺序(凸体 + 背面剔除下正向面互不重叠, 排序只是让
+    绘制顺序确定)。screen 与 cube 共用 —— 早先是两份手抄, 元组结构已经开始
+    漂移(一份带面下标一份不带), 改一半的坑就是这么长出来的。
+    """
+    eye = np.array([0.0, 0.0, focal], np.float32)
+    center = cam.mean(axis=0)
+    front: list[tuple[float, Face]] = []
+    back: list[tuple[float, Face]] = []
+    for face in BOX_FACES:
+        q = cam[list(face.verts)]
+        n = np.cross(q[1] - q[0], q[2] - q[0])
+        fc = q.mean(axis=0)
+        if float(n @ (fc - center)) < 0.0:
+            n = -n
+        (front if float(n @ (eye - fc)) > 0.0 else back).append((float(fc[2]), face))
+    front.sort(key=lambda v: v[0])
+    back.sort(key=lambda v: v[0])
+    return [f for _, f in front], [f for _, f in back]
+
+
+def _stroke_edges(canvas: np.ndarray, scr: np.ndarray, faces: list[Face], width: int) -> None:
+    """描一组面的棱, 相邻面共享的棱只画一次."""
+    drawn: set[tuple[int, int]] = set()
+    for face in faces:
+        idx = face.verts
+        for a, b in zip(idx, idx[1:] + idx[:1], strict=True):  # 4 顶点循环成 4 条棱
+            e = (a, b) if a < b else (b, a)
+            if e not in drawn:
+                drawn.add(e)
+                _edge_line(canvas, scr[a], scr[b], width=width)
+
+
 class VectorOverlayRenderer:
     """按 style(见模块 docstring)把手部特效画到帧上.
 
@@ -396,85 +433,41 @@ class VectorOverlayRenderer:
             return  # 双手靠拢 → 整个盒子收起, 什么都不画; 拉开时自然出现
         scr, cam, focal, length = geo
 
-        # 面可见性 = 外法线朝向相机(凸体, 物理正确; 不再用 2D 绕序启发式)。
-        # 外法线用"面心 − 体心"定向, 免去手工排 CCW 的符号坑。
-        eye = np.array([0.0, 0.0, focal], np.float32)
-        center = cam.mean(axis=0)
-        vis: list[tuple[float, int, Face]] = []
-        hid: list[tuple[float, int, Face]] = []
-        for fi, face in enumerate(BOX_FACES):
-            q = cam[list(face.verts)]
-            n = np.cross(q[1] - q[0], q[2] - q[0])
-            face_c = q.mean(axis=0)
-            if float(n @ (face_c - center)) < 0.0:
-                n = -n
-            (vis if float(n @ (eye - face_c)) > 0.0 else hid).append((float(face_c[2]), fi, face))
-        # 由远及近画: 先内壁(背向面), 再正向面。玻璃的"透"就来自这个顺序 ——
-        # 正向面半透盖上去时, 底下那层内壁会隐约透出, 读作"看见了盒子的另一侧"。
-        # (凸体 + 背面剔除下正向面互不重叠, 排序对它们只是让绘制顺序确定。)
-        vis.sort(key=lambda v: v[0])
-        hid.sort(key=lambda v: v[0])
+        vis, hid = _split_faces(cam, focal)
         # HUD 用: 当前哪些面朝着镜头。调 roll 时靠它区分"几何没转到"和
         # "画了但读不出来"(红背 LUT 在暗底上是全场最暗的一块, 很容易漏看)
-        self.box.debug += "  " + ("+".join(v[2].tag for v in vis) or "-")
+        self.box.debug += "  " + ("+".join(f.tag for f in vis) or "-")
 
         if not vis:  # 盒高恰好为 0: 所有面零面积, 兜底描一条侧视细线
             _edge_line(canvas, scr[0], scr[4], width=max(self.box_edge_w, 1))
             return
 
         for layer, alpha in ((hid, self.back_alpha), (vis, self.face_alpha)):
-            for _, _fi, face in layer:
+            for face in layer:
                 quad = scr[list(face.verts)]
                 shift = (0.0, BOX_SAMPLE_K * length) if face.is_top else (0.0, 0.0)
                 _fill(canvas, frame_bgr, quad, face.fx, shift, alpha)
                 if face.is_top and layer is vis:
                     self._glitch(canvas, frame_bgr, quad, seed)
 
-        # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)。
-        # 宽度 0 = 无缝模式, 直接跳过 —— cv2.line 收到 0 会当成 1px 画出来。
-        if self.box_edge_w <= 0:
-            return
-        drawn: set[tuple[int, int]] = set()
-        for _, _, face in vis:
-            idx = face.verts
-            for a, b in zip(idx, idx[1:] + idx[:1], strict=True):  # 4 顶点循环成 4 条棱
-                e = (a, b) if a < b else (b, a)
-                if e not in drawn:
-                    drawn.add(e)
-                    _edge_line(canvas, scr[a], scr[b], width=self.box_edge_w)
+        # 只描可见面的棱(背面的棱被实体挡住, 不该露)。宽度 0 = 无缝模式,
+        # 直接跳过 —— cv2.line 收到 0 会当成 1px 画出来。
+        if self.box_edge_w > 0:
+            _stroke_edges(canvas, scr, vis, self.box_edge_w)
 
     def _draw_cube(self, canvas: np.ndarray, frame_bgr: np.ndarray, seed: int) -> None:
         """悬浮立方体: 位姿来自 FloatCube, 六个面复用 effects.BOX_FACES."""
         scr, cam, focal = self.cube.project(canvas.shape[:2])
-        eye = np.array([0.0, 0.0, focal], np.float32)
-        center = cam.mean(axis=0)
-        front: list[tuple[float, Face]] = []
-        back: list[tuple[float, Face]] = []
-        for face in BOX_FACES:
-            q = cam[list(face.verts)]
-            n = np.cross(q[1] - q[0], q[2] - q[0])
-            fc = q.mean(axis=0)
-            if float(n @ (fc - center)) < 0.0:
-                n = -n
-            (front if float(n @ (eye - fc)) > 0.0 else back).append((float(fc[2]), face))
-        front.sort(key=lambda v: v[0])
-        back.sort(key=lambda v: v[0])
-        self.cube.debug += "  " + ("+".join(f.tag for _, f in front) or "-")
-        for layer, alpha in ((back, self.back_alpha), (front, self.face_alpha)):
-            for _, face in layer:
+        vis, hid = _split_faces(cam, focal)
+        self.cube.debug += "  " + ("+".join(f.tag for f in vis) or "-")
+        for layer, alpha in ((hid, self.back_alpha), (vis, self.face_alpha)):
+            for face in layer:
                 quad = scr[list(face.verts)]
                 _fill(canvas, frame_bgr, quad, face.fx, (0.0, 0.0), alpha)
-                if face.is_top and layer is front:
+                if face.is_top and layer is vis:
                     self._glitch(canvas, frame_bgr, quad, seed)
         if self.box_edge_w > 0:
-            drawn: set[tuple[int, int]] = set()
-            for _, face in front:
-                idx = face.verts
-                for a, b in zip(idx, idx[1:] + idx[:1], strict=True):
-                    e = (a, b) if a < b else (b, a)
-                    if e not in drawn:
-                        drawn.add(e)
-                        _edge_line(canvas, scr[a], scr[b], width=self.box_edge_w)
+            _stroke_edges(canvas, scr, vis, self.box_edge_w)
         self._cube_feedback(canvas)
 
     def _cube_feedback(self, canvas: np.ndarray) -> None:

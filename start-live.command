@@ -11,6 +11,7 @@ fi
 
 echo "=========================================="
 echo "  把手伸到镜头前 — 特效会贴在你自己手上"
+echo "  悬浮立方体: 单手捏住拖=翻面 | 双手捏住=移动+缩放 | X 归位"
 echo "  Q 退出 | S 换风格 | D 暗底 | R 录制"
 echo "=========================================="
 
@@ -35,4 +36,4 @@ else:
 cap.release()
 PY
 
-exec .venv/bin/python -m manual_tracking live --style mirror
+exec .venv/bin/python -m manual_tracking live --style cube

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import urllib.request
 from pathlib import Path
@@ -16,6 +17,9 @@ MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
+# URL 带版本号(/1/), 内容不可变 —— pin 住指纹。没有它, 代理劫持/CDN 错误页
+# 会被当成"下载完成", 然后下次运行在 MediaPipe 深处炸出和网络无关的报错。
+MODEL_SHA256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
 
 
 def repo_root() -> Path:
@@ -40,9 +44,9 @@ def ensure_model(model_path: str | Path | None = None) -> Path:
     显式传了 model_path 就**不下载** —— 那是用户指定的文件, 缺了该报错, 而不是
     偷偷换成官方版跑出用户没要的结果。
 
-    先下到 .part 再原子改名: 下到一半被 Ctrl-C 打断时, 留下的是一个显然没写完
-    的临时文件, 而不是一个大小不对却"存在"的 .task —— 后者会让下一次运行跳过
-    下载, 然后在 MediaPipe 里炸出一个和网络毫无关系的报错。
+    先下到 .part、校验 sha256、再原子改名: 中断留下的是显然没写完的临时文件;
+    内容不对(劫持/错误页)当场报错删掉 —— 两种坏文件都不可能顶着 .task 的名字
+    活到下一次运行, 否则 MediaPipe 会炸出一个和网络毫无关系的报错。
     """
     if model_path is not None:
         p = Path(model_path)
@@ -60,6 +64,13 @@ def ensure_model(model_path: str | Path | None = None) -> Path:
     try:
         with urllib.request.urlopen(MODEL_URL, timeout=60) as resp, tmp.open("wb") as f:
             shutil.copyfileobj(resp, f)
+        digest = hashlib.sha256(tmp.read_bytes()).hexdigest()
+        if digest != MODEL_SHA256:
+            raise RuntimeError(
+                f"模型校验失败: sha256 {digest[:12]}… ≠ 预期 {MODEL_SHA256[:12]}…\n"
+                f"  下载的内容不是官方模型(代理劫持/错误页?), 已删除。\n"
+                f"  手动下载: {MODEL_URL} → {p}"
+            )
         tmp.replace(p)
     except Exception:
         tmp.unlink(missing_ok=True)
