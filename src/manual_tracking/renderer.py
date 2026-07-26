@@ -75,6 +75,8 @@ from .tracker import FrameHands, HandPose
 
 # BGR
 GOLD = (40, 170, 255)
+CUBE_GRIP = (210, 255, 120)  # cube: 抓住了(亮青绿, 和金色骨架区分得开)
+CUBE_IDLE = (170, 170, 170)  # cube: 没抓住
 ORANGE = (20, 110, 240)
 WHITE_HOT = (230, 250, 255)
 EDGE = (255, 255, 255)  # free-edge outlines (实测纯白 4px@1080p)
@@ -483,6 +485,20 @@ class VectorOverlayRenderer:
                     if e not in drawn:
                         drawn.add(e)
                         _edge_line(canvas, scr[a], scr[b], width=self.box_edge_w)
+        self._cube_feedback(canvas)
+
+    def _cube_feedback(self, canvas: np.ndarray) -> None:
+        """把"我抓住它了没有"画在手上 —— 只有状态, 没有文字教程."""
+        cube = self.cube
+        for p, held in cube.marks:
+            c = (int(p[0]), int(p[1]))
+            if held:  # 捏住: 实心亮点 + 外环, 一眼能看见
+                cv2.circle(canvas, c, 9, CUBE_GRIP, -1, cv2.LINE_AA)
+                cv2.circle(canvas, c, 20, CUBE_GRIP, 2, cv2.LINE_AA)
+            else:  # 没捏住: 一圈虚线, 提示"这里可以抓"
+                for k in range(0, 360, 30):
+                    a = np.radians(k)
+                    cv2.circle(canvas, (int(c[0] + 16 * np.cos(a)), int(c[1] + 16 * np.sin(a))), 1, CUBE_IDLE, -1)
 
     def _glitch(self, canvas: np.ndarray, frame_bgr: np.ndarray, top: np.ndarray, seed: int) -> None:
         """蓝顶面横条故障: 水平位移的原色背景条(不染蓝)."""

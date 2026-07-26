@@ -175,7 +175,7 @@ def _draw_hud(
         f"{'  REC' if rec.on else ''}"
     )
     if renderer.style == "cube":
-        hud += f"  {renderer.cube.debug}   [捏住拖动=转 / 双手捏=移动缩放]"
+        hud += f"  {renderer.cube.debug}"  # 操作提示画在立方体旁边, 不挤 HUD
     elif renderer.box_debug:  # 只有 screen 会写它, 不必判 style
         # psi = 盒子绕长轴的角, oL/oR = 双手掌面朝向(驱动 roll 的原始信号)
         b = renderer.box

@@ -16,12 +16,22 @@ import numpy as np
 sys.path.insert(0, "src")
 
 from manual_tracking.effects import BOX_FACES  # noqa: E402
-from manual_tracking.floatcube import CUBE_SIZE_MAX, CUBE_SIZE_MIN, SPIN_MAX, FloatCube  # noqa: E402
+from manual_tracking.floatcube import (  # noqa: E402
+    CUBE_SIZE_MAX,
+    CUBE_SIZE_MIN,
+    DRAG_MAX_PX,
+    ORBIT_GAIN,
+    FloatCube,
+)
 from manual_tracking.landmarks import (  # noqa: E402
     INDEX_MCP,
     INDEX_TIP,
+    MIDDLE_MCP,
     PINKY_MCP,
+    RING_MCP,
+    THUMB_CMC,
     THUMB_TIP,
+    WRIST,
 )
 from manual_tracking.tracker import HandPose  # noqa: E402
 
@@ -29,15 +39,33 @@ SHAPE = (720, 1280)
 PALM = 160.0
 
 
+# 掌心用的是 PALM_RING 六个点的平均, 所以合成手必须把这六个点全设上 ——
+# 少设一个, 那个 (0,0) 就会把掌心往画面左上角拽, 位移被稀释, 测出来的
+# "跟手程度"是假的。
+_PALM_LAYOUT = {  # landmark → 相对手中心的偏移(掌宽的倍数)
+    WRIST: (0.0, 0.9),
+    THUMB_CMC: (-0.55, 0.7),
+    INDEX_MCP: (-0.5, 0.0),
+    MIDDLE_MCP: (-0.15, -0.05),
+    RING_MCP: (0.18, 0.0),
+    PINKY_MCP: (0.5, 0.1),
+}
+
+
 def hand(cx: float, cy: float, *, pinch: bool, tid: int = 0) -> HandPose:
-    """一只合成手: 捏合时拇指尖贴到食指尖, 松开时拉到 0.9 掌宽外."""
+    """一只合成手: 整体刚性平移, 捏合时拇指尖贴到食指尖, 松开时拉开 0.9 掌宽."""
     p = np.zeros((21, 3), np.float32)
-    p[INDEX_MCP] = (cx - PALM * 0.5, cy, 0)
-    p[PINKY_MCP] = (cx + PALM * 0.5, cy, 0)
+    for lm, (fx, fy) in _PALM_LAYOUT.items():
+        p[lm] = (cx + PALM * fx, cy + PALM * fy, 0)
     p[INDEX_TIP] = (cx, cy - PALM * 0.6, 0)
     off = 0.0 if pinch else PALM * 0.9
     p[THUMB_TIP] = (cx - off, cy - PALM * 0.6, 0)
     return HandPose(handedness="Right", score=1.0, points=p, track_id=tid)
+
+
+def pair2(cx: float, half: float = 200.0, cy: float = 400.0) -> list[HandPose]:
+    """一对都捏住的手, 中点在 cx, 相距 2*half."""
+    return [hand(cx - half, cy, pinch=True, tid=0), hand(cx + half, cy, pinch=True, tid=1)]
 
 
 def visible(cube: FloatCube) -> str:
@@ -101,12 +129,9 @@ def main() -> int:
     prev = False
     for i in range(200):
         r = 0.52 + 0.03 * np.sin(i * 0.7)  # 卡在 PINCH_ON(.42)~PINCH_OFF(.62) 之间
-        p = np.zeros((21, 3), np.float32)
-        p[INDEX_MCP] = (500 - PALM * 0.5, 400, 0)
-        p[PINKY_MCP] = (500 + PALM * 0.5, 400, 0)
-        p[INDEX_TIP] = (500, 340, 0)
-        p[THUMB_TIP] = (500 - PALM * r, 340, 0)
-        c.update([HandPose("Right", 1.0, p, 3)], SHAPE)
+        hd = hand(500, 400, pinch=True, tid=3)
+        hd.points[THUMB_TIP] = (500 - PALM * r, 400 - PALM * 0.6, 0)
+        c.update([hd], SHAPE)
         now = c._pinch.get(3, False)
         flips += now != prev
         prev = now
@@ -129,7 +154,24 @@ def main() -> int:
         f"拉开到 {big:.0f}px, 收拢到 {small:.0f}px, 允许 [{lo:.0f}, {hi:.0f}]",
     )
 
-    # 5) 双手平移: 立方体不会被推出画面
+    # 5) 平移/缩放必须 1:1 —— 手走多远它走多远, 不许打折(哥哥嫌慢的就是这个)
+    c = FloatCube()
+    c.update(pair2(500), SHAPE)  # 建立基线
+    p0 = c.pos.copy()
+    for i in range(1, 31):
+        c.update(pair2(500 + i * 10), SHAPE)  # 两手一起右移 300px
+    moved = float(c.pos[0] - p0[0])
+    c2 = FloatCube()
+    c2.update(pair2(640, half=150), SHAPE)
+    s0 = c2.size
+    c2.update(pair2(640, half=300), SHAPE)  # 两手拉开一倍
+    good &= check(
+        "平移/缩放 1:1 跟手",
+        abs(moved - 300) < 1.0 and abs(c2.size / s0 - 2.0) < 0.01,
+        f"手走 300px 立方体走 {moved:.1f}px; 两手拉开 2.0x 边长变 {c2.size/s0:.2f}x",
+    )
+
+    # 6) 双手平移: 立方体不会被推出画面
     c = FloatCube()
     for i in range(300):
         cx = 640 + i * 20
@@ -137,24 +179,43 @@ def main() -> int:
     inside = 0 <= c.pos[0] <= SHAPE[1] and 0 <= c.pos[1] <= SHAPE[0]
     good &= check("平移被夹在画面内", inside, f"pos = ({c.pos[0]:.0f}, {c.pos[1]:.0f})")
 
-    # 6) 两只手在 hands[] 里对调顺序, 不该产生假的拖动增量
+    # 7) 两只手在 hands[] 里对调顺序, 不该产生假的拖动增量
     c = FloatCube()
     a, b = hand(400, 400, pinch=True, tid=0), hand(900, 400, pinch=False, tid=1)
     for i in range(10):
         c.update([a, b] if i % 2 == 0 else [b, a], SHAPE)
     good &= check("手序对调不炸", float(np.linalg.norm(c._spin)) < 1e-6, f"|spin| = {float(np.linalg.norm(c._spin)):.2e}")
 
-    # 7) 单帧限幅: 手瞬移半个屏幕也不该把立方体甩飞
+    # 8) 限幅只该挡检测跳变, 不该误伤真实手速(实测真手 p99 = 109 px/帧)
     c = FloatCube()
     c.update([hand(100, 400, pinch=True)], SHAPE)
-    c.update([hand(1100, 400, pinch=True)], SHAPE)
+    c.update([hand(1100, 400, pinch=True)], SHAPE)  # 一帧瞬移 1000px = 误检
+    capped = float(np.linalg.norm(c._spin))
+    c2 = FloatCube()
+    c2.update([hand(400, 400, pinch=True)], SHAPE)
+    c2.update([hand(509, 400, pinch=True)], SHAPE)  # 109px = 真手最快的那 1%
+    real = float(np.linalg.norm(c2._spin))
     good &= check(
-        "瞬移被限幅",
-        float(np.linalg.norm(c._spin)) <= SPIN_MAX + 1e-6,
-        f"|spin| = {float(np.linalg.norm(c._spin)):.3f} rad ≤ {SPIN_MAX}",
+        "限幅挡跳变但不误伤真手",
+        abs(capped - DRAG_MAX_PX * ORBIT_GAIN) < 1e-6 and abs(real - 109 * ORBIT_GAIN) < 1e-4,
+        f"1000px 跳变被截到 {capped/ORBIT_GAIN:.0f}px, 109px 真手速原样通过({real/ORBIT_GAIN:.0f}px)",
     )
 
-    # 8) 松手后的自转: 要慢到不晕但看得出是活的
+    # 9) 双手模式掉一帧(两手捏在一起会互相遮挡): 立方体该停住, 不该切去转动
+    c = FloatCube()
+    two = lambda cx: [hand(cx - 200, 400, pinch=True, tid=0), hand(cx + 200, 400, pinch=True, tid=1)]
+    for i in range(20):
+        c.update(two(400 + i * 6), SHAPE)
+    rot_before, pos_before = c.rot.copy(), c.pos.copy()
+    c.update([hand(600, 400, pinch=True, tid=0)], SHAPE)  # 右手这帧没测到
+    turned = float(np.degrees(np.arccos(np.clip((np.trace(rot_before.T @ c.rot) - 1) / 2, -1, 1))))
+    good &= check(
+        "双手掉一帧不乱转",
+        turned < 1.0 and c.mode == "move",
+        f"掉帧后转了 {turned:.2f}° (宽限前 {np.linalg.norm(pos_before - c.pos):.1f}px 位移), 模式仍是 {c.mode}",
+    )
+
+    # 10) 松手后的自转: 要慢到不晕但看得出是活的
     c = FloatCube()
     for _ in range(60):
         c.update([], SHAPE)
