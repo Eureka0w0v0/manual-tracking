@@ -119,6 +119,13 @@ BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1
 # 缝隙占剪影 0.000%(中位/p90/最大都是 0), 不会露出底图。
 # mirror/banner 仍用 _edge_line 的默认 3px, 不受这个值影响。
 BOX_EDGE_W = 0
+# 玻璃质感: 面的不透明度。原片实测"透"的来源是 gradient map 保留了背景亮度
+# 结构(面内 std 与盒外背景同量级), 而不是 alpha 混合 —— 但那只让面**有纹理**,
+# 看不见"背后有东西"。真玻璃还需要两件事:
+#   1. 正面的面半透 → 背后的实拍画面隐约透出
+#   2. 先画背向面(内壁), 再半透地盖上正向面 → 看得见盒子的另一侧
+BOX_FACE_ALPHA = 0.72  # 正向面(朝镜头那几个)的不透明度
+BOX_BACK_ALPHA = 0.30  # 背向面(内壁)的不透明度; 更淡, 读作"隔着一层玻璃看到的"
 
 
 # ---- 手部几何 ----
@@ -189,17 +196,24 @@ def _fill(
     poly: np.ndarray,
     fx: FaceEffect,
     shift: tuple[float, float] = (0.0, 0.0),
+    alpha: float = 1.0,
 ) -> None:
     """把 poly 围出的区域填成 fx(背景窗口(uv+shift)) —— 三种风格唯一的上色出口.
 
     早先有 _cmap_fill / _fx_fill / _mirror_fill 三个函数, 骨架逐字相同、只有
     "怎么把 src 变成颜色"那一行不同。现在那一行外提成 FaceEffect, 三合一。
+
+    alpha<1 时与画布已有内容混合 —— 玻璃盒靠它拿到"透"的质感: 背后的实拍
+    画面(以及先画的那个面)会隐约透出来, 而不是一块不透明贴纸。
     """
     got = _poly_window(canvas, frame_bgr, poly, shift)
     if got is None:
         return
     roi, src, mask, _ = got
-    cv2.copyTo(np.ascontiguousarray(fx(src)), mask, roi)
+    out = np.ascontiguousarray(fx(src))
+    if alpha < 1.0:
+        out = cv2.addWeighted(out, alpha, roi, 1.0 - alpha, 0.0)
+    cv2.copyTo(out, mask, roi)
 
 
 class VectorOverlayRenderer:
@@ -221,6 +235,8 @@ class VectorOverlayRenderer:
         self.source_dim = float(source_dim)
         self.box = GlassBox()  # screen 的几何求解器(自带跨帧状态与实时旋钮)
         self.box_edge_w = BOX_EDGE_W  # 盒子棱线宽度(live 的 { } 键)
+        self.face_alpha = BOX_FACE_ALPHA  # 正向面不透明度(live 的 a s 键)
+        self.back_alpha = BOX_BACK_ALPHA  # 背向面(内壁)不透明度
         self._role_ids: tuple[int, int] | None = None  # (左手 sid, 右手 sid)
 
     @property
@@ -386,18 +402,19 @@ class VectorOverlayRenderer:
         eye = np.array([0.0, 0.0, focal], np.float32)
         center = cam.mean(axis=0)
         vis: list[tuple[float, int, Face]] = []
+        hid: list[tuple[float, int, Face]] = []
         for fi, face in enumerate(BOX_FACES):
             q = cam[list(face.verts)]
             n = np.cross(q[1] - q[0], q[2] - q[0])
             face_c = q.mean(axis=0)
             if float(n @ (face_c - center)) < 0.0:
                 n = -n
-            if float(n @ (eye - face_c)) > 0.0:
-                vis.append((float(face_c[2]), fi, face))
-        # 凸体 + 背面剔除 ⇒ 可见面在投影上恰好铺满剪影一次, 互不重叠(实测原片
-        # 187 帧两两交集面积恒为 0)。所以这里排序纯粹是让绘制顺序确定, 与遮挡
-        # 无关——去掉它只会让共享棱的抗锯齿舍入差 1 个灰阶。
+            (vis if float(n @ (eye - face_c)) > 0.0 else hid).append((float(face_c[2]), fi, face))
+        # 由远及近画: 先内壁(背向面), 再正向面。玻璃的"透"就来自这个顺序 ——
+        # 正向面半透盖上去时, 底下那层内壁会隐约透出, 读作"看见了盒子的另一侧"。
+        # (凸体 + 背面剔除下正向面互不重叠, 排序对它们只是让绘制顺序确定。)
         vis.sort(key=lambda v: v[0])
+        hid.sort(key=lambda v: v[0])
         # HUD 用: 当前哪些面朝着镜头。调 roll 时靠它区分"几何没转到"和
         # "画了但读不出来"(红背 LUT 在暗底上是全场最暗的一块, 很容易漏看)
         self.box.debug += "  " + ("+".join(v[2].tag for v in vis) or "-")
@@ -406,12 +423,13 @@ class VectorOverlayRenderer:
             _edge_line(canvas, scr[0], scr[4], width=max(self.box_edge_w, 1))
             return
 
-        for _, _fi, face in vis:
-            quad = scr[list(face.verts)]
-            shift = (0.0, BOX_SAMPLE_K * length) if face.is_top else (0.0, 0.0)
-            _fill(canvas, frame_bgr, quad, face.fx, shift)
-            if face.is_top:
-                self._glitch(canvas, frame_bgr, quad, seed)
+        for layer, alpha in ((hid, self.back_alpha), (vis, self.face_alpha)):
+            for _, _fi, face in layer:
+                quad = scr[list(face.verts)]
+                shift = (0.0, BOX_SAMPLE_K * length) if face.is_top else (0.0, 0.0)
+                _fill(canvas, frame_bgr, quad, face.fx, shift, alpha)
+                if face.is_top and layer is vis:
+                    self._glitch(canvas, frame_bgr, quad, seed)
 
         # 只描可见面的棱, 每条棱画一次(背面的棱被实体挡住, 不该露)。
         # 宽度 0 = 无缝模式, 直接跳过 —— cv2.line 收到 0 会当成 1px 画出来。

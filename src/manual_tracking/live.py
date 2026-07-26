@@ -432,7 +432,7 @@ def run_live(
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
     print("  Q退出 | S风格 | D暗底 | R录制")
     print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限")
-    print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线粗细  o p 底亮度")
+    print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线  a s 通透  o p 底亮度")
     print("=" * 56)
 
     frame_index = 0
@@ -529,6 +529,15 @@ def run_live(
                     np.clip(renderer.box.anchor_resp + (0.05 if up else -0.05), 0.05, 1.0)
                 )
                 print(f"anchor_resp → {renderer.box.anchor_resp:.2f}")
+            if key in (ord("a"), ord("A"), ord("s"), ord("S")) and renderer.style == "screen":
+                # screen: 玻璃通透度(正向面 alpha; 内壁按 0.42 倍跟着走)
+                up = key in (ord("s"), ord("S"))
+                renderer.face_alpha = float(
+                    np.clip(renderer.face_alpha + (0.05 if up else -0.05), 0.25, 1.0)
+                )
+                renderer.back_alpha = round(renderer.face_alpha * 0.42, 3)
+                print(f"face_alpha → {renderer.face_alpha:.2f} (back {renderer.back_alpha:.2f})")
+                continue
             if key in (ord("{"), ord("}")):  # screen: 棱线粗细
                 renderer.box_edge_w = int(
                     np.clip(renderer.box_edge_w + (1 if key == ord("}") else -1), 0, 8)
