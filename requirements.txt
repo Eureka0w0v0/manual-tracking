@@ -1,5 +1,11 @@
-mediapipe>=0.10.30
+# 上界钉在**下一个 major**: 这几个包的 major 升级历史上都动过 API(opencv 4→5
+# 改过枚举与若干函数签名, numpy 1→2 改过标量/dtype 语义)。没有上界的话 pip
+# 会在某天静默装上不兼容的版本, 症状是 MediaPipe 深处抛一个和本项目毫无关系
+# 的报错。注释里是当前实测跑通的版本。
+mediapipe>=0.10.30,<0.12          # 实测 0.10.35
 # mediapipe 依赖 opencv-contrib-python（含 GUI），显式声明避免混入其他 opencv 发行包
-opencv-contrib-python>=4.8.0
-numpy>=1.24.0
-Pillow>=10.0.0
+opencv-contrib-python>=4.8.0,<6   # 实测 5.0.0.93
+numpy>=1.24.0,<3                  # 实测 2.5.1
+# Pillow 曾经列在这里, 但源码里**一次都没 import 过**, 也不是 mediapipe 的传递
+# 依赖(它要的是 absl-py/certifi/flatbuffers/matplotlib/numpy/opencv-contrib-python/
+# sounddevice)。按 YAGNI 删掉。

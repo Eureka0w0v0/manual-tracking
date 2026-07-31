@@ -2,5 +2,7 @@
 #   .venv/bin/pip install -r requirements-dev.txt
 #   .venv/bin/ruff check src tools tests   # 静态检查
 #   .venv/bin/pytest                       # 纯逻辑契约, 不到 1 秒
-ruff>=0.6
-pytest>=8.0
+# 同样钉上界(理由见 requirements.txt)。ruff 是 0.x, minor 就可能改规则默认值,
+# 到时候 CI 会因为一条本项目从没同意过的新 lint 而变红。
+ruff>=0.6,<0.17    # 实测 0.16.0
+pytest>=8.0,<10    # 实测 9.1.1
