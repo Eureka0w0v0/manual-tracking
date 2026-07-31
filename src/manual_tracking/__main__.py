@@ -5,9 +5,15 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .pipeline import export_landmarks_json, process_video
-from .live import run_live
+from .pipeline import SOURCE_DIM as OFFLINE_DIM, export_landmarks_json, process_video
+from .live import SOURCE_DIM as LIVE_DIM, run_live
 from .renderer import STYLE_ALIASES, STYLES
+
+# 一键入口(双击 start-live.command / IDE 的 ▶ / Cmd+Shift+B / 裸 run.sh)不传参
+# 时进哪个风格 —— **唯一权威**。五个启动器过去各手抄一份, 而 run.sh 那份还抄
+# 漏了 `--style cube`(于是落到 argparse 的 mirror), 同一个"一键"按出两种结果。
+# 现在空参一律交给这里, 改默认风格只动这一行。
+DEFAULT_ARGV = ["live", "--style", "cube"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,7 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overlay style (default: mirror; legacy names map to current styles)",
     )
     run.add_argument("--no-source", action="store_true", help="Black bg, no source video")
-    run.add_argument("--source-dim", type=float, default=0.35, help="Source dim factor 0-1")
+    run.add_argument(
+        "--source-dim", type=float, default=OFFLINE_DIM, help="Source dim factor 0-1"
+    )
     run.add_argument("--no-filter", action="store_true", help="关闭 One Euro 时域滤波(裸 landmark)")
     run.add_argument("--max-frames", type=int, default=None, help="Debug: only first N frames")
 
@@ -52,7 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overlay style (default: mirror; legacy names map to current styles)",
     )
     live.add_argument("--no-source", action="store_true", help="Black bg, hide camera image")
-    live.add_argument("--source-dim", type=float, default=0.55, help="Camera dim 0-1")
+    live.add_argument(
+        "--source-dim", type=float, default=LIVE_DIM, help="Camera dim 0-1"
+    )
     live.add_argument("--no-filter", action="store_true", help="关闭 One Euro 时域滤波(裸 landmark)")
     live.add_argument("--no-mirror", action="store_true", help="Disable mirror")
     live.add_argument("--width", type=int, default=1920, help="采集宽 (默认 1920)")
@@ -81,7 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    # 空参(裸 `python -m manual_tracking` / 各种一键入口) → DEFAULT_ARGV
+    args = build_parser().parse_args(argv if argv else DEFAULT_ARGV)
     model = args.model  # None = 用默认位置, 缺了就自动下载(见 paths.ensure_model)
 
     if args.cmd == "run":

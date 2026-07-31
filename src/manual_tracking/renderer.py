@@ -113,6 +113,16 @@ def canon_style(name: str) -> str:
 
 
 # ---- tunables (哥哥要调效果基本都在这里) ----
+# 实拍底的默认压暗系数。**两个场景两个值, 各自只在这里定义一次**:
+#   live 亮一点(0.55) —— 手得看得见, 特效贴在自己手上才对得准;
+#   离线渲染暗一点(0.35) —— 成片里特效是主角, 底图只当环境。
+# live / pipeline / __main__ 全部从这里导入, 不要在各自的默认参数里手抄:
+# 早先 CLI 写 0.55 而 run_live() 的签名默认是 0.65, 命令行和直接 import 调用
+# 出来的画面亮度不一样, 两边还都"看着没错"。
+# renderer 不区分 live/离线 —— 那是入口层的策略, 各自的默认值见 live.SOURCE_DIM
+# 与 pipeline.SOURCE_DIM。这里只留一个场景中性的 ctor 默认。
+SOURCE_DIM_DEFAULT = 0.55
+BLANK_BG = (8, 6, 12)  # 关掉实拍底时的纯色底(近黑, 微微偏冷)
 PINCH_SHUT_PX = 16.0  # 双手捏距都小于此值 → 侧视细线(实测捏合张开 10-34px@1920)
 ROLE_HYST_PX = 25.0  # 左右角色互换需越过的掌心 x 差(防双手并拢时颜色频闪)
 BASE_B = 0.85  # 默认亮度(纸平摊时接近亮白)
@@ -293,7 +303,7 @@ class VectorOverlayRenderer:
         style: str = "mirror",
         *,
         show_source: bool = True,
-        source_dim: float = 0.65,
+        source_dim: float = SOURCE_DIM_DEFAULT,
     ) -> None:
         self._style = canon_style(style)
         self.show_source = show_source

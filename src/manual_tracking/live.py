@@ -23,6 +23,13 @@ from .paths import default_output_dir, ensure_model
 from .renderer import STYLES, VectorOverlayRenderer
 from .tracker import FrameHands, HandPose, HandTracker
 
+# 实拍底的压暗系数 —— **live 场景的策略, 所以归 live 管**(离线的那份在
+# pipeline.SOURCE_DIM)。live 要亮一点: 手得看得见, 特效贴在自己手上才对得准。
+# CLI 与 run_live() 都从这里取, 别在各自的默认参数里手抄 —— 早先 CLI 写 0.55
+# 而 run_live() 的签名默认是 0.65, 命令行和直接 import 调用出来的画面亮度不
+# 一样, 两边还都"看着没错"。
+SOURCE_DIM = 0.55
+
 FPS_WARMUP_FRAMES = 5  # 前 N 帧不计入 fps_ema(冷启动: 首帧 read/首次推理远慢于稳态)
 EXTRAP_CAP_MS = 80.0  # 外推最多补偿这么多毫秒的检测延迟
 EXTRAP_DAMP = 0.7  # 外推阻尼(压过冲)
@@ -374,7 +381,7 @@ def run_live(
     model_path: str | Path | None = None,
     style: str = "mirror",
     show_source: bool = True,
-    source_dim: float = 0.65,
+    source_dim: float = SOURCE_DIM,
     filter_on: bool = True,
     mirror: bool = True,
     width: int = 1920,

@@ -43,6 +43,18 @@
 # 或双击 start-live.command
 ```
 
+IDE 里想直接点运行按钮的话用仓库根的 `main.py`。不带参数 = `live --style cube`，
+和 `start-live.command` 一致（四个一键入口进的是同一个风格）：
+
+```bash
+python main.py                             # = ./run.sh live --style cube
+python main.py live --style mirror         # 想要别的风格就照常传参
+```
+
+**不要**直接执行 `src/manual_tracking/__main__.py`——它用相对导入，只能走
+`python -m manual_tracking`，当脚本跑必报 `attempted relative import with no
+known parent package`。`main.py` 存在的唯一理由就是替 IDE 绕开这条规则。
+
 首次运行会自动下载 MediaPipe 手部模型（~7.5MB）到 `models/`。它不进 git——官方
 URL 随时能取回字节级一致的同一份，没必要让仓库永远背着它。想用自己的模型就
 `--model /path/to/xxx.task`（显式指定时**不会**自动下载，缺了直接报错）。
@@ -84,8 +96,8 @@ HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/ruff check src tools tests                       # 静态检查（配置在 pyproject.toml）
-.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，95 条，<1 秒
+.venv/bin/ruff check main.py src tools tests                # 静态检查（配置在 pyproject.toml）
+.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，103 条，<1 秒
 PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，26 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数

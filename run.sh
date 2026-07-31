@@ -10,9 +10,7 @@ if [[ ! -d "$VENV" ]]; then
   "$VENV/bin/pip" install -r "${ROOT}/requirements.txt"
 fi
 
-# default to live if no args
-if [[ $# -eq 0 ]]; then
-  set -- live
-fi
-
+# 空参不在这里补默认值 —— 交给 __main__.DEFAULT_ARGV, 那是全部一键入口的唯一
+# 权威。这里原先写的是 `set -- live`, 漏了 `--style cube`, 于是 ./run.sh 进
+# 折纸镜面而双击入口进立方体, 同一个"一键"两种结果。
 exec "$VENV/bin/python" -m manual_tracking "$@"
