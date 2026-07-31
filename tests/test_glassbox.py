@@ -109,6 +109,33 @@ def test_reset_clears_cross_frame_state(two_hands):
     assert box._psi_rate == 0.0
 
 
+def test_reset_keeps_the_shut_hysteresis(two_hands):
+    """reset() **必须留着**靠拢滞回 —— solve() 在收起动画走完后每帧都调它.
+
+    清掉的话, 下一帧会按 gap_shut(而不是 gap_shut+GAP_HYST)重判, 滞回等于没有,
+    双手停在阈值附近时盒子就会逐帧闪现。
+    """
+    box = GlassBox()
+    solved(box, *two_hands)
+    box._shut = True
+    box.reset()
+    assert box._shut is True
+
+
+def test_hands_left_also_clears_the_shut_hysteresis(two_hands):
+    """手全离场 ≠ 收起动画走完: 前者连滞回一起归零, 回来重新判.
+
+    留着的话, 手在画面外"合拢"过, 回来第一帧会用宽阈值误判成收起。
+    这条契约原先由 renderer 伸手写 box._shut 维持, 没有任何测试覆盖。
+    """
+    box = GlassBox()
+    solved(box, *two_hands)
+    box._shut = True
+    box.hands_left()
+    assert box._shut is False
+    assert box._ema is None, "hands_left 也该清掉 reset 那套滤波历史"
+
+
 def test_static_pose_converges_not_oscillates(two_hands):
     """手不动时 ψ 必须收敛到定值, 不能在两个值之间来回跳(那就是画面在抖)."""
     box = GlassBox()

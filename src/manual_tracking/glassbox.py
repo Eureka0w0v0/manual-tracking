@@ -122,9 +122,13 @@ class GlassBox:
         self._ease = 0.0  # 收起(0)↔出现(1)的过渡进度
 
     def reset(self) -> None:
-        """清跨帧状态(手离场/合拢/切风格). 下一帧当作冷启动.
+        """清跨帧滤波状态(合拢/切风格). 下一帧当作冷启动.
 
-        **不含左右手角色滞回** —— 那个是三种风格共用的, 归 renderer 管。
+        **保留靠拢滞回 `_shut`** —— solve() 在收起动画走完后**每帧**都调这个
+        方法, 清掉 `_shut` 下一帧就会按 gap_shut(而不是 gap_shut+GAP_HYST)重判,
+        滞回等于没有。手真的全离场时用 hands_left(), 那里才连它一起清。
+
+        **也不含左右手角色滞回** —— 那个是三种风格共用的, 归 renderer 管。
         """
         self._ema = None
         self._psi_rate = 0.0
@@ -133,6 +137,18 @@ class GlassBox:
         self._anchor_rate = 0.0
         self._ease = 0.0
         self.debug = ""
+
+    def hands_left(self) -> None:
+        """手全部离场: 在 reset() 之上连靠拢滞回一起归零.
+
+        与 reset() 的差别只有 `_shut` 这一位, 但那一位不该由调用方去写 ——
+        它是 solve() 里 GAP_SHUT/GAP_HYST 滞回的内部状态: 手还在画面里时
+        (合拢/切风格)必须留着, 清了会在 gap_shut..gap_shut+GAP_HYST 那道窗里
+        逐帧翻转; 手全离场了才没有"上一帧"可言。这个区别属于 GlassBox 自己,
+        所以给它一个名字, 而不是让 renderer 伸手改私有属性。
+        """
+        self.reset()
+        self._shut = False
 
     def anchor(self, hand: HandPose) -> np.ndarray:
         """一只手的锚点(掌心↔指弧中点插值). 双手合拢画种子点时也要用."""
@@ -166,8 +182,8 @@ class GlassBox:
         cR, fR, sR, pR, oR = grip(right)
         # 碰到一起就收起。用**未滤波的原始 landmark**算最近距离 —— 锚点带了
         # 自适应 EMA, 快速合拢时它滞后于真手, 会漏判。
-        a, b = left.points[:, :2], right.points[:, :2]
-        gap = float(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2).min())
+        raw_l, raw_r = left.points[:, :2], right.points[:, :2]
+        gap = float(np.linalg.norm(raw_l[:, None, :] - raw_r[None, :, :], axis=2).min())
         gap_r = gap / max((pL + pR) * 0.5, 1e-3)
         # 出现阈值 = 收起阈值 + 固定间距, 这样实时调一个值滞回宽度不变
         self._shut = gap_r < (self.gap_shut + GAP_HYST if self._shut else self.gap_shut)
@@ -178,9 +194,7 @@ class GlassBox:
         )
         if self._ease <= 0.02:
             if self._shut:
-                keep = self._shut  # reset 会清滤波历史, 但滞回状态必须留着
-                self.reset()
-                self._shut = keep
+                self.reset()  # 只清滤波历史; _shut 由 reset 有意保留(见其 docstring)
             return None
         t = self.anchor_lift  # 0=掌心(偏低) 1=指弧中点(原片高度)
         anc = np.stack([cL + (fL - cL) * t, cR + (fR - cR) * t])  # (2,2) 左右锚点
@@ -215,9 +229,9 @@ class GlassBox:
         if self._ema is None:
             height, psi, dzr = height_raw, psi_raw, dzr_raw
         else:
-            a = BOX_SMOOTH
-            height = self._ema[0] * a + height_raw * (1.0 - a)
-            dzr = self._ema[2] * a + dzr_raw * (1.0 - a)
+            sm = BOX_SMOOTH
+            height = self._ema[0] * sm + height_raw * (1.0 - sm)
+            dzr = self._ema[2] * sm + dzr_raw * (1.0 - sm)
             # ψ: 转得越快滤波越松 → 静止不抖, 快速翻手仍然跟手
             prev = self._ema[1]
             # 走最短弧: ψ 是角度, ±π 是同一姿态。线性插值会绕远路——实测原片

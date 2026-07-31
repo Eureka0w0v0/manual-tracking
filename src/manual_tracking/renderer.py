@@ -343,9 +343,13 @@ class VectorOverlayRenderer:
         self.box.reset()
 
     def _reset_state(self) -> None:
-        """清掉全部跨帧状态(手离场). 下一帧当作冷启动."""
-        self._reset_box()
-        self.box._shut = False  # 手都离场了, 靠拢滞回归零, 回来重新判
+        """清掉全部跨帧状态(手离场). 下一帧当作冷启动.
+
+        比 _reset_box 多清一个靠拢滞回 —— 那一位归 GlassBox 自己管, 所以走它的
+        hands_left() 而不是从这里写它的私有属性。_role_ids 的处理与 _reset_box
+        相同(不清), 理由见那边的 docstring。
+        """
+        self.box.hands_left()
         self._role_ids = None
 
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
