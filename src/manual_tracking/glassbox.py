@@ -111,7 +111,7 @@ class GlassBox:
         self.roll_resp = BOX_ROLL_RESP  # live 9 0 : 旋转跟手程度
         self.roll_max_rate = BOX_ROLL_MAX_RATE  # live 7 8 : 角速度上限
         self.anchor_resp = BOX_ANCHOR_RESP  # live - = : 锚点跟手程度
-        self.gap_shut = GAP_SHUT  # live ( ) : 双手多近才收起(出现阈值跟着走)
+        self.gap_shut = GAP_SHUT  # live < > : 双手多近才收起(出现阈值跟着走)
         self.debug = ""  # HUD 用: 当前 ψ / 双手掌朝向 / 长轴深度
         self._ema: tuple[float, float, float] | None = None  # (盒高, ψ, 长轴深度比)
         self._psi_rate = 0.0  # ψ 的角速度估计(rad/帧), 驱动自适应滤波

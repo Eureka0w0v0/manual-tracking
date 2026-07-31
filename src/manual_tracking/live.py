@@ -14,7 +14,9 @@ import json
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -80,6 +82,9 @@ def _refps(path: Path, fps: float) -> bool:
         tmp.unlink(missing_ok=True)
         return False
 
+
+
+REC_MIN_SEC = 1.0  # 短于此的录制不做帧率修正(样本不足, 实测值会荒谬)
 
 
 class _Recorder:
@@ -157,7 +162,6 @@ class _Recorder:
 
 
 
-REC_MIN_SEC = 1.0  # 短于此的录制不做帧率修正(样本不足, 实测值会荒谬)
 HUD_BAR_H = 34  # HUD 黑条高度(px)
 HUD_REC_DOT = 7  # 录制红点半径(px)
 
@@ -203,6 +207,190 @@ def _draw_hud(
     )
     if rec.on:
         cv2.circle(out, (out.shape[1] - 24, 16), HUD_REC_DOT, (0, 0, 255), -1)
+
+
+# ---- 键位 ----
+# 全部键位字面量**只在这里出现一次**。原先是 17 条平铺 `if key in (ord(..), ..)`
+# (一条 elif 都没有, 每帧 17 条全跑)加 50 处散落的 ord(), 而且一个键要在守卫和
+# 分支体里各写一遍(`0.1 if key == ord("]") else -0.1`)。
+#
+# 代价已经兑现过: glassbox.py 的 gap_shut 注释一度写着 "live ( )", 真实绑定却是
+# "< >" —— 键位说明散在窗口标题 / 开机横幅 / 分支体三处, 各改各的。现在横幅里
+# 旋钮那半由 _KNOBS 生成, 这类漂移在结构上不再可能。
+#
+# 撞键: 平铺 if 时代是**静默双触发**(一次按键跑两条分支), 现在建表时当场抛。
+
+
+@dataclass
+class _Tick:
+    """一帧里 handler 会用到、而 renderer 身上没有的那几样.
+
+    复用同一个实例, 只在真的按了键时才刷字段 —— 没按键的帧零开销。
+    """
+
+    renderer: VectorOverlayRenderer
+    rec: "_Recorder"
+    out: np.ndarray
+    fps_ema: float = 0.0
+    warm: bool = False
+    quit: bool = False
+
+
+_Handler = Callable[["_Tick", str], None]
+
+
+@dataclass(frozen=True)
+class _Knob:
+    """按一下 ±一步、钳进 [lo, hi] 的旋钮 —— 七个调参键的共同形状.
+
+    dec/inc 各可写多个字符: `-`/`_` 与 `=`/`+` 是同一档的 shift 变体。
+    owner="" 指 renderer 自己, 否则是它的子对象名(box / cube)。
+    label="" 表示改完不打印(source_dim 原先就不打)。
+    """
+
+    dec: str
+    inc: str
+    owner: str
+    attr: str
+    step: float
+    lo: float
+    hi: float
+    hint: str  # 开机横幅由它生成
+    label: str = ""
+    unit: str = ""
+    fmt: str = "{:.2f}"
+
+    def apply(self, t: "_Tick", ch: str) -> None:
+        obj = getattr(t.renderer, self.owner) if self.owner else t.renderer
+        step = self.step if ch in self.inc else -self.step
+        val = float(np.clip(getattr(obj, self.attr) + step, self.lo, self.hi))
+        setattr(obj, self.attr, val)
+        if self.label:
+            print(f"{self.label} → {self.fmt.format(val)}{self.unit}")
+
+
+_KNOBS: tuple[_Knob, ...] = (
+    _Knob("o", "p", "", "source_dim", 0.05, 0.05, 1.0, "o p 底亮度"),
+    _Knob("[", "]", "box", "roll_expo", 0.1, 0.6, 3.0, "[ ] 翻转曲线", "roll_expo"),
+    _Knob(";", "'", "box", "anchor_lift", 0.05, 0.0, 1.4, "; ' 挂多高", "anchor_lift"),
+    _Knob(",", ".", "box", "depth_bias", 0.05, 0.0, 1.0, ", . 旋转轴", "depth_bias"),
+    _Knob("-_", "=+", "box", "anchor_resp", 0.05, 0.05, 1.0, "- = 锚点跟手", "anchor_resp"),
+    _Knob("<", ">", "box", "gap_shut", 0.05, 0.05, 1.2, "< > 收起距离", "gap_shut"),
+    _Knob("7", "8", "box", "roll_max_rate", 5.0, 5.0, 90.0, "7 8 角速度上限",
+          "roll_max_rate", "°/帧", "{:.0f}"),
+)
+
+
+def _act_quit(t: _Tick, ch: str) -> None:
+    t.quit = True
+
+
+def _act_style(t: _Tick, ch: str) -> None:
+    """S: 循环切风格.
+
+    下一个风格直接从 STYLES 算 —— 原先另存了一个 style_idx 跟着它走, 那是可
+    推导的冗余状态: STYLES 是元组、canon_style 保证成员资格, 所以当前风格恒在
+    表内, 而 renderer.style 的 setter 还要顺带清盒子状态, 它才是唯一事实源。
+    """
+    nxt = STYLES[(STYLES.index(t.renderer.style) + 1) % len(STYLES)]
+    t.renderer.style = nxt
+    print(f"style → {nxt}")
+
+
+def _act_bg(t: _Tick, ch: str) -> None:
+    t.renderer.show_source = not t.renderer.show_source
+    print(f"show_source → {t.renderer.show_source}")
+
+
+def _act_alpha(t: _Tick, ch: str) -> None:
+    """g/h: 玻璃通透度(正向面 alpha; 内壁按 0.42 倍跟着走).
+
+    不能用 a/s —— s 已经是切风格键, 同一次按键会先切风格再改 alpha。
+    联动 back_alpha 是它进不了 _KNOBS 的唯一原因。
+    """
+    step = 0.05 if ch == "h" else -0.05
+    t.renderer.face_alpha = float(np.clip(t.renderer.face_alpha + step, 0.25, 1.0))
+    t.renderer.back_alpha = round(t.renderer.face_alpha * 0.42, 3)
+    print(f"face_alpha → {t.renderer.face_alpha:.2f} (back {t.renderer.back_alpha:.2f})")
+
+
+def _act_edge(t: _Tick, ch: str) -> None:
+    """{ }: 盒子棱线粗细. 整数档 + 0 要额外提示"无缝", 所以不走 _KNOBS."""
+    step = 1 if ch == "}" else -1
+    t.renderer.box_edge_w = int(np.clip(t.renderer.box_edge_w + step, 0, 8))
+    w = t.renderer.box_edge_w
+    print(f"box_edge_w → {w}{' (无缝)' if w == 0 else ''}")
+
+
+def _act_spin(t: _Tick, ch: str) -> None:
+    """9/0: 旋转跟手程度 —— 两种风格调的不是同一个量, 所以按风格分派.
+
+    cube 的 orbit_gain 跨一个数量级(0.002-0.06), 只能**乘性**步进;
+    screen 的 roll_resp 就在 0.1-0.9 之间, 加性即可。
+    """
+    if t.renderer.style == "cube":
+        k = 1.15 if ch == "0" else 1 / 1.15
+        t.renderer.cube.orbit_gain = float(np.clip(t.renderer.cube.orbit_gain * k, 0.002, 0.06))
+        print(f"orbit_gain → {t.renderer.cube.orbit_gain:.4f}")
+    else:
+        step = 0.05 if ch == "0" else -0.05
+        t.renderer.box.roll_resp = float(np.clip(t.renderer.box.roll_resp + step, 0.1, 0.9))
+        print(f"roll_resp → {t.renderer.box.roll_resp:.2f}")
+
+
+def _act_gravity(t: _Tick, ch: str) -> None:
+    t.renderer.cube.gravity = not t.renderer.cube.gravity
+    print(f"gravity → {'ON (F 关闭)' if t.renderer.cube.gravity else 'OFF'}")
+
+
+def _act_cube_reset(t: _Tick, ch: str) -> None:
+    t.renderer.cube.reset()
+    print("cube reset")
+
+
+def _act_record(t: _Tick, ch: str) -> None:
+    t.rec.toggle(t.out, t.fps_ema, t.warm)
+
+
+# 形状各异、进不了 _KNOBS 的键(理由写在各自的 docstring 里)
+_ACTIONS: dict[str, _Handler] = {
+    "q": _act_quit,
+    "\x1b": _act_quit,  # Esc
+    "s": _act_style,
+    "d": _act_bg,
+    "g": _act_alpha,
+    "h": _act_alpha,
+    "{": _act_edge,
+    "}": _act_edge,
+    "9": _act_spin,
+    "0": _act_spin,
+    "f": _act_gravity,
+    "x": _act_cube_reset,
+    "r": _act_record,
+}
+
+
+def _build_keymap() -> dict[str, _Handler]:
+    """键 → handler. 撞键在这里当场炸 —— 平铺 if 时代它是静默双触发."""
+    m: dict[str, _Handler] = dict(_ACTIONS)
+    for kb in _KNOBS:
+        for ch in kb.dec + kb.inc:
+            if ch in m:
+                raise AssertionError(f"键 {ch!r} 被绑了两次")
+            m[ch] = kb.apply
+    return m
+
+
+def _key_char(key: int) -> str:
+    """cv2.waitKey 的返回值 → 查表用的字符; 没按键/不可打印返回 "".
+
+    字母的大小写在这里统一一次 —— 原先 10 个字母键各写一对 ord("s"), ord("S")。
+    只对**字母**生效: ","/"<" 与 "."/">" 是两档不同的旋钮, lower() 不会把它们
+    并到一起。
+    """
+    if key == 27:
+        return "\x1b"
+    return chr(key).lower() if 32 <= key < 127 else ""
 
 
 def _open_camera(camera: int, width: int, height: int, fps: int = 0) -> cv2.VideoCapture:
@@ -402,8 +590,7 @@ def run_live(
         show_source=show_source,
         source_dim=source_dim,
     )
-    styles = list(STYLES)
-    style_idx = styles.index(renderer.style)
+    keymap = _build_keymap()  # 撞键在这里炸, 不进主循环
 
     # 先建 tracker 再开摄像头/开窗: 模型损坏之类的失败在这里抛, 此时还没有任何
     # 资源需要回收(否则摄像头会被占着直到进程退出)。
@@ -434,6 +621,8 @@ def run_live(
     )
 
     rec = _Recorder(record)
+    # 按键 handler 的上下文; out/fps_ema/warm 在真按了键的那一帧才刷
+    tick = _Tick(renderer, rec, np.empty((1, 1, 3), np.uint8))
 
     print("=" * 56)
     print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅")
@@ -446,11 +635,13 @@ def run_live(
     )
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
     print("  Q退出 | S风格 | D暗底 | R录制")
-    print("  screen 调参: [ ] 翻转曲线  ; ' 挂多高  , . 旋转轴  7 8 角速度上限")
-    print("               9 0 旋转跟手  - = 锚点跟手  < > 收起距离  { } 棱线")
+    # 旋钮那半从 _KNOBS 生成 —— 手抄过, 漂过(glassbox 的注释一度写 "( )" 而
+    # 实际绑的是 "< >")。形状各异的那几个键留在下面一行手写。
+    knob_hints = "  ".join(k.hint for k in _KNOBS)
+    print(f"  调参: {knob_hints}")
+    print("        9 0 旋转跟手  g h 通透  { } 棱线")
     print("  cube  操作: 捏在盒上拖=转 | 双手捏住=移动+缩放+拧 | 张开手=炸开")
     print("              F 重力开关 | X 归位")
-    print("  通用调参: g h 通透  o p 底亮度")
     print("=" * 56)
 
     frame_index = 0
@@ -513,88 +704,16 @@ def run_live(
             cv2.imshow(window_name, out)
             key = cv2.waitKey(1) & 0xFF
 
-            if key in (ord("q"), ord("Q"), 27):
-                break
-            if key in (ord("s"), ord("S")):
-                style_idx = (style_idx + 1) % len(styles)
-                renderer.style = styles[style_idx]
-                print(f"style → {styles[style_idx]}")
-            if key in (ord("d"), ord("D")):
-                renderer.show_source = not renderer.show_source
-                print(f"show_source → {renderer.show_source}")
-            if key in (ord("o"), ord("O")):
-                renderer.source_dim = float(max(0.05, renderer.source_dim - 0.05))
-            if key in (ord("p"), ord("P")):
-                renderer.source_dim = float(min(1.0, renderer.source_dim + 0.05))
-            if key in (ord("["), ord("]")):  # screen: 翻转曲线陡度(小=灵敏, 大=中心钝但稳)
-                renderer.box.roll_expo = float(
-                    np.clip(renderer.box.roll_expo + (0.1 if key == ord("]") else -0.1), 0.6, 3.0)
-                )
-                print(f"roll_expo → {renderer.box.roll_expo:.2f}")
-            if key in (ord(";"), ord("'")):  # screen: 实时调盒子挂多高(掌心↔指弧)
-                renderer.box.anchor_lift = float(
-                    np.clip(renderer.box.anchor_lift + (0.05 if key == ord("'") else -0.05), 0.0, 1.4)
-                )
-                print(f"anchor_lift → {renderer.box.anchor_lift:.2f}")
-            if key in (ord(","), ord(".")):  # screen: 旋转不动点 前面(0)↔体心(0.5)↔后面(1)
-                renderer.box.depth_bias = float(
-                    np.clip(renderer.box.depth_bias + (0.05 if key == ord(".") else -0.05), 0.0, 1.0)
-                )
-                print(f"depth_bias → {renderer.box.depth_bias:.2f}")
-            if key in (ord("-"), ord("_"), ord("="), ord("+")):  # screen: 锚点跟手程度
-                up = key in (ord("="), ord("+"))
-                renderer.box.anchor_resp = float(
-                    np.clip(renderer.box.anchor_resp + (0.05 if up else -0.05), 0.05, 1.0)
-                )
-                print(f"anchor_resp → {renderer.box.anchor_resp:.2f}")
-            if key in (ord("g"), ord("G"), ord("h"), ord("H")):
-                # 玻璃通透度(正向面 alpha; 内壁按 0.42 倍跟着走)。不能用 a/s ——
-                # s 已经是切风格键, 同一次按键会先切风格再改 alpha。
-                up = key in (ord("h"), ord("H"))
-                renderer.face_alpha = float(
-                    np.clip(renderer.face_alpha + (0.05 if up else -0.05), 0.25, 1.0)
-                )
-                renderer.back_alpha = round(renderer.face_alpha * 0.42, 3)
-                print(f"face_alpha → {renderer.face_alpha:.2f} (back {renderer.back_alpha:.2f})")
-            if key in (ord("{"), ord("}")):  # screen: 棱线粗细
-                renderer.box_edge_w = int(
-                    np.clip(renderer.box_edge_w + (1 if key == ord("}") else -1), 0, 8)
-                )
-                print(f"box_edge_w → {renderer.box_edge_w}{' (无缝)' if renderer.box_edge_w == 0 else ''}")
-            if key in (ord("<"), ord(">")):  # screen: 双手多近才收起
-                up = key == ord(">")
-                renderer.box.gap_shut = float(
-                    np.clip(renderer.box.gap_shut + (0.05 if up else -0.05), 0.05, 1.2)
-                )
-                print(f"gap_shut → {renderer.box.gap_shut:.2f}")
-            if key in (ord("7"), ord("8")):  # screen: 角速度上限(度/帧), 小=更稳但更钝
-                renderer.box.roll_max_rate = float(
-                    np.clip(renderer.box.roll_max_rate + (5.0 if key == ord("8") else -5.0), 5.0, 90.0)
-                )
-                print(f"roll_max_rate → {renderer.box.roll_max_rate:.0f}°/帧")
-            if key in (ord("9"), ord("0")):  # 旋转跟手程度(大=跟手, 小=顺滑)
-                if renderer.style == "cube":  # cube: 拖 1px 转多少
-                    renderer.cube.orbit_gain = float(
-                        np.clip(
-                            renderer.cube.orbit_gain * (1.15 if key == ord("0") else 1 / 1.15),
-                            0.002,
-                            0.06,
-                        )
-                    )
-                    print(f"orbit_gain → {renderer.cube.orbit_gain:.4f}")
-                else:
-                    renderer.box.roll_resp = float(
-                        np.clip(renderer.box.roll_resp + (0.05 if key == ord("0") else -0.05), 0.1, 0.9)
-                    )
-                    print(f"roll_resp → {renderer.box.roll_resp:.2f}")
-            if key in (ord("f"), ord("F")):  # cube: 重力模式(扔出去走抛物线)
-                renderer.cube.gravity = not renderer.cube.gravity
-                print(f"gravity → {'ON (F 关闭)' if renderer.cube.gravity else 'OFF'}")
-            if key in (ord("x"), ord("X")):  # cube: 位姿归位(飘出画面 / 转乱了时用)
-                renderer.cube.reset()
-                print("cube reset")
-            if key in (ord("r"), ord("R")):
-                rec.toggle(out, fps_ema, frame_index >= FPS_WARMUP_FRAMES + 10)
+            # 没按键时 waitKey 返回 -1(&0xFF = 255), 查表 miss —— 直接跳过, 不
+            # 像原先那样每帧空跑 17 条 if。
+            handler = keymap.get(_key_char(key)) if key != 255 else None
+            if handler is not None:
+                tick.out = out  # handler 要用的当帧量, 只在真按了键时才刷
+                tick.fps_ema = fps_ema
+                tick.warm = frame_index >= FPS_WARMUP_FRAMES + 10
+                handler(tick, _key_char(key))
+                if tick.quit:
+                    break
 
             frame_index += 1
     finally:
