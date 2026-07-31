@@ -107,12 +107,12 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 
 | 层 | 位置 | 挡什么 | 依赖 |
 |---|---|---|---|
-| 契约 | `tests/` | 改错了会崩：面拓扑、effect 的尺寸/不可变契约、盒子刚性、别名表 | 无（合成手，不读素材） |
+| 契约 | `tests/` | 改错了会崩：面拓扑、effect 的尺寸/不可变契约、盒子刚性、别名表、handedness 滞回 | 无（合成手，不读素材） |
 | 手感 | `tools/cube_check.py` | 拖不动、转回头、松手乱飘 | 无（合成手） |
 | 回归 | `tools/e2e_check.py` | 改差了不好用：颜色频闪、背面读不出 | 样片 + 模型 |
 
 改完 `screen` 的几何/映射/滤波必须跑 `e2e_check`：它是唯一能发现「可见面每秒切换
-5 次」这类体感灾难的手段——`tests/` 那 95 条全绿也照样看不见频闪。基线与结论见
+5 次」这类体感灾难的手段——`tests/` 那 103 条全绿也照样看不见频闪。基线与结论见
 [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md) §3.6–3.8。
 
 `tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手（21 个 landmark 全铺满：

@@ -3,6 +3,7 @@
 稳定性设计(全部有实测数据背书, 见 git 历史里的 5 份审查报告):
 - 手用持久 slot 跟踪(track_id), 帧间按手腕距离做 2x2 最优指派——
   handedness 标签翻转/输出顺序变化不再互换两只手的滤波历史
+- handedness 也锁在轨迹上(连续 5 帧改判才切), 单帧翻转不再让 orient 反号
 - One Euro 替代固定 EMA: 静止残噪不劣化, 快速运动滞后 23.5→9px(角点级)
 - 短暂丢检测保留 slot 250ms(TTL, 按墙钟计), 不再单帧清史导致恢复帧裸输出瞬移
 - 只滤 xy; z 保留当帧原始观测(AE 导出数据不被跨参考系混合污染)
@@ -31,6 +32,9 @@ OE_D_CUTOFF = 1.0  # Hz, 速度估计低通
 SLOT_TTL_MS = 250.0
 MATCH_PALM_SCALE = 1.5  # 配对门限 = 该值 × 掌宽(|MCP5-MCP17|)
 MATCH_MIN_PX = 80.0  # 掌宽异常小时的门限下限
+# handedness 改判需要连续这么多帧确认(与 floatcube 的 PINCH_OFF_FRAMES 同一个
+# 手法: 建立瞬时, 推翻保守)。5 帧 = 167ms@30fps, 真的换手感觉不出延迟。
+LABEL_FLIP_FRAMES = 5
 
 
 @dataclass
@@ -54,15 +58,46 @@ class FrameHands:
 
 
 class _Slot:
-    """一条手部轨迹: track_id + One Euro 滤波状态 + 寿命."""
+    """一条手部轨迹: track_id + One Euro 滤波状态 + handedness + 寿命."""
 
-    __slots__ = ("sid", "x", "dx", "t_ms")
+    __slots__ = ("sid", "x", "dx", "t_ms", "label", "_dissent")
 
-    def __init__(self, sid: int, pts: np.ndarray, ts_ms: float) -> None:
+    def __init__(self, sid: int, pts: np.ndarray, ts_ms: float, label: str) -> None:
         self.sid = sid
         self.x = pts.copy()
         self.dx = np.zeros((21, 2), np.float32)
         self.t_ms = float(ts_ms)  # 最后一次匹配上的时刻; TTL 由它算, 不用 tick 计数
+        self.label = label  # 锁在轨迹上的 handedness(见 vote)
+        # 起手就差一票 —— 首帧标签**没有信心**, 下一个不同的观测立刻推翻它。
+        # MediaPipe 刚认出一只手时 handedness 最不准: 实测 assets/sample.mp4 的
+        # tid5 裸标签是 Right×1 | Left×28(首帧判错, 之后 28 帧全对)。把首帧当
+        # 可信基准的话, 错标签会活满 LABEL_FLIP_FRAMES 帧, 比根本不锁存还差。
+        # 锁存要挡的是轨迹**中段**的单帧噪声, 不是给首帧背书。
+        self._dissent = LABEL_FLIP_FRAMES - 1
+
+    def vote(self, label: str) -> str:
+        """这条轨迹的 handedness: 带滞回, 不直接用当帧的裸标签.
+
+        MediaPipe 的 handedness 是**每帧独立**判的, 翻腕/遮挡时会单帧翻转——
+        实测 assets/sample.mp4 的 408 个手帧里翻 1 次。而 handgeom.orient()
+        的符号直接取它(sign = +1 if Right else −1), 翻一次 orient 就整个反号
+        (实测那一帧 |Δorient| = 0.55), mirror 的半张纸亮度跟着闪一下
+        (B_SWING 0.65 下 ≈36% 的亮度跳)。
+
+        同一条轨迹就是同一只手, 所以标签该跟着轨迹走; 轨迹断了(TTL 过期)才
+        开新 slot 重新取标签, 因此锁存不会把"真的换了只手"锁死。
+
+        滞回只对**已经确认过至少一帧**的标签生效 —— 首帧标签起手就差一票,
+        见 __init__ 里 _dissent 的初值。
+        """
+        if label == self.label:
+            self._dissent = 0
+        else:
+            self._dissent += 1
+            if self._dissent >= LABEL_FLIP_FRAMES:
+                self.label = label
+                self._dissent = 0
+        return self.label
 
     def filt(self, pts: np.ndarray, ts_ms: float) -> np.ndarray:
         """One Euro: 截止频率随速度自适应; 只滤 xy, z 直通."""
@@ -132,14 +167,20 @@ class HandTracker:
         """丢掉超过 TTL 没再匹配上的轨迹(墙钟计时, 与检测率无关)."""
         self._slots = [s for s in self._slots if ts_ms - s.t_ms <= SLOT_TTL_MS]
 
-    def _track(self, pts_list: list[np.ndarray], ts_ms: float) -> list[tuple[np.ndarray, int]]:
-        """配对 + 滤波: 返回 [(filtered_pts, track_id)], 与输入同序.
+    def _track(
+        self, pts_list: list[np.ndarray], labels: list[str], ts_ms: float
+    ) -> list[tuple[np.ndarray, int, str]]:
+        """配对 + 滤波: 返回 [(filtered_pts, track_id, handedness)], 与输入同序.
 
         两手时做 2x2 最优指派(总距离最小), 消除贪心的顺序依赖;
         门限随掌宽自适应, 杜绝 300px 级跨手误配。
+
+        handedness 也在这里定: 配上轨迹的走 _Slot.vote 的滞回, 新轨迹直接取
+        当帧标签。关滤波 = 没有轨迹, 裸标签直通(--no-filter 本来就是"给我原始
+        观测"的意思)。
         """
         if not self.filter_on:
-            return [(p, -1) for p in pts_list]
+            return [(p, -1, lb) for p, lb in zip(pts_list, labels, strict=True)]
 
         old = self._slots
         pairs: list[tuple[int, int]] = []
@@ -169,22 +210,23 @@ class HandTracker:
                     uk.add(k)
                     uj.add(j)
 
-        out: dict[int, tuple[np.ndarray, int]] = {}
+        out: dict[int, tuple[np.ndarray, int, str]] = {}
         matched = {j for _, j in pairs}
         keep_slots: list[_Slot] = []
         for k, j in pairs:
             s = old[j]
-            out[k] = (s.filt(pts_list[k], ts_ms), s.sid)  # filt 会把 t_ms 推到当前
+            # filt 会把 t_ms 推到当前; vote 给出这条轨迹锁定的 handedness
+            out[k] = (s.filt(pts_list[k], ts_ms), s.sid, s.vote(labels[k]))
             keep_slots.append(s)
         for j, s in enumerate(old):
             if j not in matched and ts_ms - s.t_ms <= SLOT_TTL_MS:
                 keep_slots.append(s)
         for k in range(len(pts_list)):
             if k not in out:  # 没配上任何旧轨迹 → 开一条新的, 当帧不滤波
-                s = _Slot(self._next_id, pts_list[k], ts_ms)
+                s = _Slot(self._next_id, pts_list[k], ts_ms, labels[k])
                 self._next_id += 1
                 keep_slots.append(s)
-                out[k] = (pts_list[k], s.sid)
+                out[k] = (pts_list[k], s.sid, s.label)
         self._slots = keep_slots
         return [out[k] for k in range(len(pts_list))]
 
@@ -216,22 +258,26 @@ class HandTracker:
             return FrameHands(index=frame_index, hands=hands)
 
         inv = 1.0 / scale if scale > 0 else 1.0
-        labels: list[tuple[str, float]] = []
+        labels: list[str] = []
+        scores: list[float] = []
         pts_list: list[np.ndarray] = []
         for i, lms in enumerate(result.hand_landmarks):
             if result.handedness and i < len(result.handedness):
                 cat = result.handedness[i][0]
-                labels.append((cat.category_name, float(cat.score)))
+                labels.append(cat.category_name)
+                scores.append(float(cat.score))
             else:
-                labels.append(("Unknown", 0.0))
+                labels.append("Unknown")
+                scores.append(0.0)
             # landmarks are normalized to infer image → map to full frame pixels
             pts_list.append(
                 np.array([[lm.x * iw * inv, lm.y * ih * inv, lm.z] for lm in lms], dtype=np.float32)
             )
 
-        # _track 保证"与输入同序等长", strict=True 把这条契约钉成断言
-        tracked = self._track(pts_list, float(timestamp_ms))
-        for (label, score), (pts, sid) in zip(labels, tracked, strict=True):
+        # _track 保证"与输入同序等长", strict=True 把这条契约钉成断言。
+        # handedness 取 _track 给的**轨迹级**标签, 不是上面那份逐帧裸标签。
+        tracked = self._track(pts_list, labels, float(timestamp_ms))
+        for score, (pts, sid, label) in zip(scores, tracked, strict=True):
             hands.append(HandPose(handedness=label, score=score, points=pts, track_id=sid))
 
         order = {"Right": 0, "Left": 1}
