@@ -63,6 +63,57 @@ GLITCH_SHIFT = 40
 GLITCH_HOLD = 2  # 每 N 帧换一次图案, 逐帧换会闪成噪声
 BANNER_THRESH = 115  # banner 双色调亮度阈值
 
+# ---- 共享原语(两个以上 effect 用到; 单独一个用的就地写) ----
+
+
+def _shrink_for_work(src: np.ndarray, work_max: int) -> np.ndarray:
+    """把 src 缩到最长边 ≤ work_max; 已经够小就原样返回(不拷贝).
+
+    四叉树和点云的输出都是**低频结构**(块状 / cell 周期的点阵), 在缩略图上
+    算完再放大, 观感一致但省一个数量级(1920x1080 满帧 13.5ms → 1.5ms)。
+
+    缩小必须用 INTER_NEAREST: INTER_AREA 会读遍全部像素, 实测 1660x847→420
+    要 7.81ms, 而整个特效预算才 2-3ms —— 它会是这条路径上唯一的大头。面积平均
+    带来的抗锯齿在块状/点阵输出上根本看不出来, 换 INTER_NEAREST 后同一步只要
+    0.05ms(156x)。
+    """
+    h, w = src.shape[:2]
+    if max(h, w) <= work_max:
+        return src
+    k = work_max / max(h, w)
+    return cv2.resize(
+        src, (max(int(w * k), 8), max(int(h * k), 8)), interpolation=cv2.INTER_NEAREST
+    )
+
+
+class _Tiled:
+    """按需增长的平铺缓存: 一张周期性小图铺满 ≥(h, w) 的画布, 不够大才重铺.
+
+    三个 effect 都要它(riso 的抖动偏置 / halftone 的阈值瓦片 / 点云的点孔掩码):
+    面的 bbox 每帧都在变, 但只有**变大**时才需要重铺 —— 变小直接切片(返回视图,
+    免费)。原先每帧重新 np.tile, halftone 实测要 16.6ms。
+
+    必须按 max(新, 旧) 增长。只看新尺寸的话, 盒子转动时 bbox 在"高瘦"和"矮胖"
+    之间来回, 每一帧都会推翻上一次的缓存, 缓存等于没有。
+    """
+
+    __slots__ = ("_tile", "_big")
+
+    def __init__(self, tile: np.ndarray) -> None:
+        self._tile = tile
+        self._big: np.ndarray | None = None
+
+    def take(self, h: int, w: int) -> np.ndarray:
+        big = self._big
+        if big is None or big.shape[0] < h or big.shape[1] < w:
+            th, tw = self._tile.shape[:2]
+            gh = max(h, 0 if big is None else big.shape[0])
+            gw = max(w, 0 if big is None else big.shape[1])
+            big = np.tile(self._tile, (gh // th + 1, gw // tw + 1))
+            self._big = big
+        return big[:h, :w]
+
+
 # ---- 颜色映射(gray→BGR 的 256 级 colormap, 配 cv2.applyColorMap) ----
 
 
@@ -186,22 +237,17 @@ def _fx_riso(
     # 中途试过"抖动烘焙成 16 张相位表"反而更慢(16 次 copyTo, 11.9ms), 已否掉。
     bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32)
     # 偏置写成无符号: 先给灰度减去 dither/2 的直流, 抖动就能全用加法
-    bias_tile = np.clip(bayer / 16.0 * dither, 0, 255).astype(np.uint8)
+    bias = _Tiled(np.clip(bayer / 16.0 * dither, 0, 255).astype(np.uint8))
     dc = int(round(dither * 0.5))
     luts = [
         np.where(np.arange(256, dtype=np.int16) >= thresh + dc, light[i], dark[i]).astype(np.uint8)
         for i in range(3)
     ]
-    cache: dict[str, np.ndarray] = {}
 
     def fn(src: np.ndarray) -> np.ndarray:
         h, w = src.shape[:2]
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-        big = cache.get("t")
-        if big is None or big.shape[0] < h or big.shape[1] < w:
-            big = np.tile(bias_tile, (max(h, 0) // 4 + 1, max(w, 0) // 4 + 1))
-            cache["t"] = big
-        g = cv2.add(g, big[:h, :w])  # 饱和加法, 不会回绕
+        g = cv2.add(g, bias.take(h, w))  # 饱和加法, 不会回绕
         return cv2.merge([cv2.LUT(np.roll(g, o, axis=1) if o else g, luts[i])
                           for i, o in enumerate(offs)])
 
@@ -226,16 +272,7 @@ def _fx_quadtree(
 
     def fn(src: np.ndarray) -> np.ndarray:
         full_h, full_w = src.shape[:2]
-        # 四叉树的视觉是"块结构", 不是像素细节 —— 在缩略图上算完再最近邻放大,
-        # 观感一样但省一个数量级(1920x1080 满帧 13.5ms → 1.5ms)。
-        if max(full_h, full_w) > QUAD_WORK_MAX:
-            k = QUAD_WORK_MAX / max(full_h, full_w)
-        # 缩小用 INTER_AREA 会读遍全部像素, 实测 1660x847→420 要 7.81ms, 而整个
-        # 特效预算才 2-3ms —— 它是这条路径上唯一的大头。这两个特效的输出本来就是
-        # 块状/点阵的低频结构, 面积平均带来的抗锯齿看不出来, 换 INTER_NEAREST
-        # 后同一步只要 0.05ms(156x)。
-            src = cv2.resize(src, (max(int(full_w * k), 8), max(int(full_h * k), 8)),
-                             interpolation=cv2.INTER_NEAREST)
+        src = _shrink_for_work(src, QUAD_WORK_MAX)  # 块结构是低频的, 缩略图上算够用
         h, w = src.shape[:2]
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
         # 一次算好: 灰度的 sum/sum²(判方差) + 彩色的 sum(取叶子均色)。
@@ -292,18 +329,16 @@ def _fx_pointcloud(
     tint_lut = np.clip(
         np.arange(256, dtype=np.float32)[:, None] * (np.array(tint, np.float32) / 255.0), 0, 255
     ).astype(np.uint8)[:, None, :]
+    # 点内开洞用的掩码: 只留每个 cell 中心一小块。它是 cell 周期的固定图案,
+    # 铺一次就能一直用 —— 原先每帧 np.tile, 实测占这个 effect 的 17%。
+    hole = np.zeros((cell, cell), np.uint8)
+    _c0 = cell // 2
+    hole[max(_c0 - 1, 0) : _c0 + 1, max(_c0 - 1, 0) : _c0 + 1] = 255
+    holes = _Tiled(hole)
 
     def fn(src: np.ndarray) -> np.ndarray:
         full_h, full_w = src.shape[:2]
-        # 点阵是 cell 周期的低频结构, 在缩略图上算完再放大观感一致(见 PC_WORK_MAX)
-        if max(full_h, full_w) > PC_WORK_MAX:
-            k = PC_WORK_MAX / max(full_h, full_w)
-        # 缩小用 INTER_AREA 会读遍全部像素, 实测 1660x847→420 要 7.81ms, 而整个
-        # 特效预算才 2-3ms —— 它是这条路径上唯一的大头。这两个特效的输出本来就是
-        # 块状/点阵的低频结构, 面积平均带来的抗锯齿看不出来, 换 INTER_NEAREST
-        # 后同一步只要 0.05ms(156x)。
-            src = cv2.resize(src, (max(int(full_w * k), 8), max(int(full_h * k), 8)),
-                             interpolation=cv2.INTER_NEAREST)
+        src = _shrink_for_work(src, PC_WORK_MAX)  # 点阵是 cell 周期的低频结构
         h, w = src.shape[:2]
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
         # 1) 采样成点阵: 缩到 1/cell 再最近邻放大 —— 每个 cell 只剩一个采样值,
@@ -316,11 +351,7 @@ def _fx_pointcloud(
         v = cv2.addWeighted(small, 0.35, cv2.convertScaleAbs(det, alpha=gain), 1.0, -float(floor))
         pts = cv2.resize(v, (w, h), interpolation=cv2.INTER_NEAREST)
         # 3) 点内开洞: 只留每个 cell 的中心一小块, 其余归零 → 看得见"点"
-        mask = np.zeros((cell, cell), np.uint8)
-        c0 = cell // 2
-        mask[max(c0 - 1, 0) : c0 + 1, max(c0 - 1, 0) : c0 + 1] = 255
-        tile = np.tile(mask, (h // cell + 1, w // cell + 1))[:h, :w]
-        pts = cv2.bitwise_and(pts, tile)
+        pts = cv2.bitwise_and(pts, holes.take(h, w))
         # 4) 辉光: 点扩散成小光斑, 叠回自身 → 发光感而不是硬像素
         if glow:
             pts = cv2.addWeighted(pts, 1.0, cv2.GaussianBlur(pts, (0, 0), glow), 1.6, 0.0)
@@ -343,27 +374,20 @@ def _halftone_thresh(cell: int) -> np.ndarray:
 def _fx_halftone(cell: int, paper: tuple[int, int, int], ink: tuple[int, int, int]) -> FaceEffect:
     """半调网点: 亮度低于"到中心距离"阈值的像素上墨 → 点随暗部长大.
 
-    平铺阈值图**按需增长后长期复用**, 每帧只做一次切片(视图, 免费)+ 一次
-    uint8 比较 + 一次调色板索引。原先每帧重新 np.tile 要 16.6ms, 现在 1.5ms。
+    阈值图交给 _Tiled 按需增长后长期复用, 每帧只剩一次切片(视图, 免费)+ 一次
+    uint8 比较 + 一次调色板索引。
     """
-    tile = (_halftone_thresh(cell) * 255.0).astype(np.uint8)
+    thresh = _Tiled((_halftone_thresh(cell) * 255.0).astype(np.uint8))
     duo = np.empty((256, 1, 3), np.uint8)
     duo[:128] = np.array(paper, np.uint8)  # 掩码 0 = 亮 = 纸
     duo[128:] = np.array(ink, np.uint8)  # 掩码 255 = 暗 = 墨
-    cache: dict[str, np.ndarray] = {}
 
     def fn(src: np.ndarray) -> np.ndarray:
         h, w = src.shape[:2]
-        big = cache.get("t")
-        if big is None or big.shape[0] < h or big.shape[1] < w:
-            reps = (max(h, big.shape[0] if big is not None else 0) // cell + 1,
-                    max(w, big.shape[1] if big is not None else 0) // cell + 1)
-            big = np.tile(tile, reps)
-            cache["t"] = big
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
         # compare → 0/255 掩码, 再走 applyColorMap 的双色表; 全程 OpenCV, 不做
         # numpy 花式索引(那一步实测占 10ms 里的 8ms)
-        return cv2.applyColorMap(cv2.compare(g, big[:h, :w], cv2.CMP_LT), duo)
+        return cv2.applyColorMap(cv2.compare(g, thresh.take(h, w), cv2.CMP_LT), duo)
 
     return fn
 

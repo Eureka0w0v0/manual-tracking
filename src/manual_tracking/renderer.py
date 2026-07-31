@@ -314,6 +314,10 @@ class VectorOverlayRenderer:
         self.face_alpha = BOX_FACE_ALPHA  # 正向面不透明度(live 的 g h 键)
         self.back_alpha = BOX_BACK_ALPHA  # 背向面(内壁)不透明度
         self._role_ids: tuple[int, int] | None = None  # (左手 sid, 右手 sid)
+        # 底图的两份缓存(见 _canvas): 纯色底的常量图 / source_dim 的压暗查表
+        self._blank: np.ndarray | None = None
+        self._dim_lut: np.ndarray | None = None
+        self._dim_lut_for = -1.0
 
     @property
     def style(self) -> str:
@@ -352,15 +356,38 @@ class VectorOverlayRenderer:
         self.box.hands_left()
         self._role_ids = None
 
+    def _canvas(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """这一帧的底: 压暗过的实拍, 或纯色底. 返回的永远是可写的新画布.
+
+        两处都曾是热路径上的大头(1080p 实测):
+        - 纯色底原先是 `np.empty_like` + `out[:] = (8, 6, 12)`。给 (1080,1920,3)
+          广播一个 3 元组走的是 numpy 的 stride-3 慢路径, **5.03ms/帧** —— 比
+          整套特效还贵。预建一张常量图再 copy 只要 0.074ms(68x), 逐像素一致。
+          copy 省不掉: 下游要往返回的画布上画。
+        - 压暗原先每帧 `cv2.convertScaleAbs`(0.644ms)。烘成 256 项查表后
+          `cv2.LUT` 只要 0.205ms(3.1x)。source_dim 由 o/p 键以 0.05 步进, 表只
+          在它变了才重建。
+
+        查表**让 OpenCV 自己算**(拿 0..255 的斜坡过一遍 convertScaleAbs), 不用
+        np.rint: 后者走 float64, 与 OpenCV 的 float32 在 x.5 边界上分岔 ——
+        实测 dim=0.55 时差 3 个灰阶、0.35 差 2 个。让它自己给答案, 12 个档位
+        实测逐位相同。
+        """
+        if not self.show_source:
+            if self._blank is None or self._blank.shape != frame_bgr.shape:
+                self._blank = np.empty_like(frame_bgr)
+                self._blank[:] = BLANK_BG
+            return self._blank.copy()
+        if self.source_dim >= 0.98:
+            return frame_bgr.copy()
+        if self._dim_lut_for != self.source_dim:
+            ramp = np.arange(256, dtype=np.uint8).reshape(256, 1)
+            self._dim_lut = cv2.convertScaleAbs(ramp, alpha=self.source_dim, beta=0).reshape(256)
+            self._dim_lut_for = self.source_dim
+        return cv2.LUT(frame_bgr, self._dim_lut)
+
     def render(self, frame_bgr: np.ndarray, frame_hands: FrameHands) -> np.ndarray:
-        if self.show_source:
-            if self.source_dim >= 0.98:
-                out = frame_bgr.copy()
-            else:
-                out = cv2.convertScaleAbs(frame_bgr, alpha=self.source_dim, beta=0)
-        else:
-            out = np.empty_like(frame_bgr)
-            out[:] = (8, 6, 12)
+        out = self._canvas(frame_bgr)
 
         hands = frame_hands.hands
         if self.style == "cube":
