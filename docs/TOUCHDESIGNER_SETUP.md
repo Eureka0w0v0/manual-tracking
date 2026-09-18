@@ -127,7 +127,8 @@ Webcam
 3. 掌心中点做一张 **半透明 mesh**（膜）  
 4. 颜色用橙金：`rgb(1.0, 0.55, 0.1)` 一类  
 
-本仓库的 Python 实时版（`./run.sh live --style fabric`）是同一思路的简化实现，方便不装 TD 时预览。
+本仓库早期的 `fabric` 风格（橙金空间布）已退役，`--style fabric` 现在只是 `mirror`（折纸镜面）的别名。
+不装 TD 想预览「双手之间撑一张面」这个思路，用 `./run.sh live --style mirror`；只要骨架和指尖用 `--style wire`。
 
 ---
 
@@ -168,4 +169,4 @@ Webcam
 | YouTube | https://www.youtube.com/c/nunukoe · https://www.youtube.com/@nunukoe |
 | Threads | https://www.threads.net/@nunu.koe |
 
-能确定的公开底座是 **torinmb/mediapipe-touchdesigner**；橙金空间布特效需在 TD 里用关键点自建，或用本仓库 `fabric` 风格做实时近似。
+能确定的公开底座是 **torinmb/mediapipe-touchdesigner**；橙金空间布特效需在 TD 里用关键点自建，或用本仓库 `mirror` 风格（双手之间的折纸镜面）做实时近似——原先的 `fabric` 布料风格已退役。
