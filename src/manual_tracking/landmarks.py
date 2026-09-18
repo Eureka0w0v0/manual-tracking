@@ -20,6 +20,9 @@ PALM_RING: tuple[int, ...] = (
     PINKY_MCP,
 )
 
+# 五个指尖 —— 骨架把它们画得比别的关节大一圈(renderer 与 neon 都要)
+TIP_IDS: tuple[int, ...] = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
+
 CONNECTIONS: tuple[tuple[int, int], ...] = (
     (0, 1),
     (1, 2),

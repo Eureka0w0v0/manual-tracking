@@ -1,10 +1,5 @@
 """Hand overlay renderer — 参数全部来自对原视频的逐像素逆向测量.
 
-mirror — 折纸镜面(抖音 manualtracking / AM, v1 前半):
-  四角钉在双手拇指尖+食指尖; 平摊=单面, 顶边×底边交叉=麻花双翼(右翼在前),
-  双手捏死=双瓣细白线。面 = 反相镜面 clamp(283 - 0.56*bg), 折起的面采样点
-  外移并乘冷灰。描边只描自由边, 带 ±2px 色差晕。
-
 screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
   手不再直接钉顶点, 而是给 6 个低噪参数; 长方体在 3D 里造好再投影,
   刚性和透视是构造出来的, 不靠事后正则化。原片帧 312 逐点配准实测:
@@ -21,12 +16,9 @@ screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
   只描可见面的棱(背面的棱被实体挡住)。
   双手靠拢 → 盒子收起(什么都不画), 拉开 → 重新出现。
 
-banner — TouchDesigner 横幅(v2):
-  四角 = 双手食指尖(上边)+拇指尖(下边)。四层条带: 黄阈值头带 /
-  X-ray 中窗(solarize, 左右内缩+黄侧线) / 白软阈值分隔线 / 悬出的红脚带,
-  内容全部为摄像头画面的屏幕空间 1:1 双色调变换, 无整板描边。
-
-wire — 纯骨架调试。
+三个不带 3D 盒子的风格各自成模块: mirror→sheet.py / banner→banner.py /
+wire→neon.py; 它们共用的填充原语在 paint.py。这里留下 screen 与 cube,
+以及风格注册表、底图缓存、左右手角色滞回。
 """
 
 from __future__ import annotations
@@ -36,10 +28,8 @@ import random
 import cv2
 import numpy as np
 
+from . import banner, neon, sheet
 from .boxgeom import CORNER_SIGNS, project_box
-from .floatcube import EXPLODE_DIST, RIPPLE_LIFE, FloatCube
-from .glassbox import MIN_SPAN_PX, GlassBox
-from .handgeom import orient, palm_center, pinch
 from .effects import (
     BOX_FACES,
     GLITCH_H,
@@ -48,23 +38,12 @@ from .effects import (
     GLITCH_STRIPS,
     GLITCH_W,
     Face,
-    BANNER_YELLOW,
-    RED_CMAP,
-    WHITE_CMAP,
-    XRAY_CMAP,
-    YELLOW_CMAP,
-    fx_mirror,
-    _fx_lut,
 )
-from .paint import EDGE, WHITE_HOT, edge_line, fill, poly_window, seg_cross
-from .landmarks import (
-    CONNECTIONS,
-    INDEX_TIP,
-    MIDDLE_TIP,
-    PINKY_TIP,
-    RING_TIP,
-    THUMB_TIP,
-)
+from .floatcube import EXPLODE_DIST, RIPPLE_LIFE, FloatCube
+from .glassbox import GlassBox
+from .handgeom import palm_center
+from .landmarks import CONNECTIONS, TIP_IDS
+from .paint import EDGE, WHITE_HOT, edge_line, fill, poly_window
 from .tracker import FrameHands, HandPose
 
 # BGR
@@ -72,21 +51,13 @@ GOLD = (40, 170, 255)
 CUBE_GRIP = (210, 255, 120)  # cube: 抓住了(亮青绿, 和金色骨架区分得开)
 CUBE_IDLE = (170, 170, 170)  # cube: 没抓住
 ORANGE = (20, 110, 240)
-FRINGE_WARM = (40, 150, 255)  # 描边色差晕: 亮侧橙
-FRINGE_COOL = (235, 225, 90)  # 描边色差晕: 暗侧青
-
-TIP_IDS = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
-
-# ---- 光照 / 拖影 / 涟漪 / 霓虹 (新效果 tunables) ----
+# ---- 光照(screen / cube 的面着色) ----
 # 虚拟光源方向(相机系: x 右, y 上, z 朝观察者), 左上前方 —— 转动时面的明暗
 # 随朝向流动, 立体感来自这里。SHADE_MIN 是背光面的亮度地板: 六个面各有像素
 # 处理, 压得太黑会吃掉暗部效果(点云/硬阈值), 0.72 实测质感和可读性都在。
 _LIGHT = np.array([-0.35, 0.55, 0.75], np.float32)
 _LIGHT /= float(np.linalg.norm(_LIGHT))
 SHADE_MIN = 0.72
-NEON_GLOW = (255, 160, 40)  # wire 霓虹: 辉光层(电青蓝 BGR)
-NEON_CORE = (255, 240, 210)  # wire 霓虹: 芯线(近白偏青)
-NEON_FLOW = 0.06  # 流动光点的相位步进(/帧); 一根骨头 ~0.5s 走完
 
 # ---- 风格注册表(唯一权威; live/__main__ 从这里导入, 不要手抄) ----
 STYLES = ("mirror", "screen", "cube", "banner", "wire")
@@ -116,13 +87,7 @@ def canon_style(name: str) -> str:
 # 与 pipeline.SOURCE_DIM。这里只留一个场景中性的 ctor 默认。
 SOURCE_DIM_DEFAULT = 0.55
 BLANK_BG = (8, 6, 12)  # 关掉实拍底时的纯色底(近黑, 微微偏冷)
-PINCH_SHUT_PX = 16.0  # 双手捏距都小于此值 → 侧视细线(实测捏合张开 10-34px@1920)
 ROLE_HYST_PX = 25.0  # 左右角色互换需越过的掌心 x 差(防双手并拢时颜色频闪)
-BASE_B = 0.85  # 默认亮度(纸平摊时接近亮白)
-B_SWING = 0.65  # 翻手带来的亮度摆幅
-COOL_START = 0.7  # 亮度低于此值开始变冷
-COOL_RATE = 1.8  # 变冷速度
-MIRROR_SHIFT = 0.35  # 折起的面采样点外移量(跨距比例)
 BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1080)
 # 盒子棱线宽度(px); **0 = 完全不描边**。
 # 原片实测是 4px@1080p 的白线, 但那是"纸板盒"的粗描边; 玻璃盒的六个面各自
@@ -130,7 +95,7 @@ BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1
 # 面与面的交界靠颜色差异本身就读得出来, 更像一整块玻璃。
 # 去掉安全: 相邻面共享顶点, fillPoly 直接接上 —— 实测可见面之间的未覆盖
 # 缝隙占剪影 0.000%(中位/p90/最大都是 0), 不会露出底图。
-# mirror/banner 仍用 _edge_line 的默认 3px, 不受这个值影响。
+# mirror/banner 走 paint.edge_line 的默认 3px, 不受这个值影响。
 BOX_EDGE_W = 0
 # 玻璃质感: 面的不透明度。原片实测"透"的来源是 gradient map 保留了背景亮度
 # 结构(面内 std 与盒外背景同量级), 而不是 alpha 混合 —— 但那只让面**有纹理**,
@@ -296,23 +261,24 @@ class VectorOverlayRenderer:
             # 照样悬浮 —— 所以既不走"双手"分支, 也不该被清状态。
             self.cube.update(hands, out.shape[:2])
             self._draw_cube(out, frame_bgr, frame_hands.index)
-        elif len(hands) >= 2:
-            if self.style == "mirror":
-                self._draw_sheet(out, frame_bgr, hands)
-            elif self.style == "screen":
-                self._draw_box(out, frame_bgr, hands, frame_hands.index)
-            elif self.style == "banner":
-                self._draw_banner(out, frame_bgr, hands)
-        else:
+        elif len(hands) < 2:
             # 手不足两只 → 清跨帧状态。_box_geometry 里那份只覆盖"双手合拢"
             # (它要 len(hands)>=2 才被调到), 手移出画面走的是这条路: 实测离场
             # 3 秒回来时 _box_ema/_psi_rate 原封不动, 盒子要边转边追 18 帧(0.6s)。
             self._reset_state()
+        elif self.style == "mirror":
+            sheet.draw(out, frame_bgr, *self._ordered(hands))
+        elif self.style == "screen":
+            left, right = self._ordered(hands)
+            self._draw_box(out, frame_bgr, left, right, frame_hands.index)
+        elif self.style == "banner":
+            banner.draw(out, frame_bgr, *self._ordered(hands))
+        # wire 落到这里: 两只手也不需要盒子/纸面, 骨架在下面统一画
 
         for i, h in enumerate(hands):
             if self.style == "wire":
                 # wire 不再是调试骨架: 霓虹电流(辉光 + 芯线 + 流动光点)
-                self._skeleton_neon(out, h, frame_hands.index)
+                neon.draw(out, h, frame_hands.index)
             else:
                 self._skeleton(out, h, i)
         return out
@@ -330,39 +296,6 @@ class VectorOverlayRenderer:
             r = 4 if i in TIP_IDS else 3
             cv2.circle(canvas, (x, y), r, WHITE_HOT, -1, cv2.LINE_AA)
             cv2.circle(canvas, (x, y), r, color, 1, cv2.LINE_AA)
-
-    def _skeleton_neon(self, canvas: np.ndarray, hand: HandPose, phase: int) -> None:
-        """wire 风格: 霓虹电流骨架 —— 辉光层 + 芯线 + 沿骨骼流动的光点.
-
-        辉光 = 粗线画进黑图层 → 高斯模糊 → **加法**混合回画布(自发光, 不是
-        覆盖)。模糊只在手部 bbox 里做, 1080p 全幅模糊是 ~8ms, bbox 是 ~0.3ms。
-        """
-        pts = hand.as_int()
-        h, w = canvas.shape[:2]
-        x0 = max(int(pts[:, 0].min()) - 48, 0)
-        y0 = max(int(pts[:, 1].min()) - 48, 0)
-        x1 = min(int(pts[:, 0].max()) + 48, w)
-        y1 = min(int(pts[:, 1].max()) + 48, h)
-        if x1 - x0 < 8 or y1 - y0 < 8:
-            return
-        roi = canvas[y0:y1, x0:x1]
-        glow = np.zeros_like(roi)
-        lp = pts - (x0, y0)
-        for a, b in CONNECTIONS:
-            cv2.line(glow, tuple(lp[a]), tuple(lp[b]), NEON_GLOW, 5, cv2.LINE_AA)
-        cv2.GaussianBlur(glow, (0, 0), 6, dst=glow)
-        cv2.add(roi, glow, dst=roi)
-        for a, b in CONNECTIONS:
-            cv2.line(canvas, tuple(pts[a]), tuple(pts[b]), NEON_CORE, 2, cv2.LINE_AA)
-        # 流动光点: 每根骨头一个, 相位错开 —— "电流"在骨架里跑
-        for k, (a, b) in enumerate(CONNECTIONS):
-            t = (phase * NEON_FLOW + k * 0.37) % 1.0
-            p = pts[a] + (pts[b] - pts[a]).astype(np.float32) * t
-            c = (int(p[0]), int(p[1]))
-            cv2.circle(canvas, c, 4, NEON_GLOW, -1, cv2.LINE_AA)
-            cv2.circle(canvas, c, 2, WHITE_HOT, -1, cv2.LINE_AA)
-        for tid in TIP_IDS:
-            cv2.circle(canvas, (int(pts[tid, 0]), int(pts[tid, 1])), 3, WHITE_HOT, -1, cv2.LINE_AA)
 
     def _ordered(self, hands: list[HandPose]) -> tuple[HandPose, HandPose]:
         """画面左手/右手, 带 25px 滞回——双手并拢时角色不逐帧翻转.
@@ -388,60 +321,16 @@ class VectorOverlayRenderer:
         self._role_ids = (left.track_id, right.track_id)
         return left, right
 
-    # ---------- mirror: 折纸镜面 ----------
-
-    def _draw_sheet(self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose]) -> None:
-        left, right = self._ordered(hands)
-        iL, tL, cL, gapL = pinch(left)
-        iR, tR, cR, gapR = pinch(right)
-
-        span_v = cR - cL
-        span = float(np.linalg.norm(span_v))
-        if span < MIN_SPAN_PX:
-            return
-
-        # 双手都捏死 → 纸转到侧面: 双瓣白线(两条白线夹一道细缝, 实测无光晕)
-        if max(gapL, gapR) < PINCH_SHUT_PX:
-            perp = np.array([-span_v[1], span_v[0]], np.float32) / span
-            for s in (-2.0, 2.0):
-                edge_line(canvas, cL + perp * s, cR + perp * s)
-            return
-
-        u = span_v / span
-
-        # 每半张纸的明暗由那只手的手掌朝向决定: 默认亮白, 翻手变暗
-        bL = float(np.clip(BASE_B + B_SWING * orient(left), 0.2, 1.0))
-        bR = float(np.clip(BASE_B + B_SWING * orient(right), 0.2, 1.0))
-
-        # 角点钉在指尖上(实测偏差 ≤0.13×捏距): TL=左食指 BL=左拇指 BR=右拇指 TR=右食指
-        # 顶边×底边相交 → 麻花态: 两个交叉三角翼, 右翼后画(压在前面)
-        x = seg_cross(iL, iR, tR, tL)
-        faces: list[tuple[np.ndarray, float, float]]  # (poly, b, 采样偏移方向)
-        if x is not None:
-            faces = [
-                (np.array([iL, x, tL], np.float32), bL, -1.0),
-                (np.array([x, iR, tR], np.float32), bR, +1.0),
-            ]
-        else:
-            faces = [(np.array([iL, iR, tR, tL], np.float32), (bL + bR) * 0.5, 0.0)]
-
-        for poly, b, side in faces:
-            # 折起的面: 镜面采样点沿跨距方向外移, 采到别处(亮墙反相成暗面)
-            shift_v = u * (side * (1.0 - b) * MIRROR_SHIFT * span)
-            cool = float(np.clip((COOL_START - b) * COOL_RATE, 0.0, 1.0))
-            fill(canvas, frame_bgr, poly, fx_mirror(cool), (float(shift_v[0]), float(shift_v[1])))
-            pr = np.round(poly).astype(np.int32)
-            # 描边只描自由边(整面轮廓), 附 ±2px 色差晕
-            cv2.polylines(canvas, [pr + (2, 1)], True, FRINGE_WARM, 1, cv2.LINE_AA)
-            cv2.polylines(canvas, [pr - (2, 1)], True, FRINGE_COOL, 1, cv2.LINE_AA)
-            cv2.polylines(canvas, [pr], True, EDGE, 3, cv2.LINE_AA)
-
     # ---------- screen: 彩色玻璃盒 ----------
 
     def _draw_box(
-        self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose], seed: int
+        self,
+        canvas: np.ndarray,
+        frame_bgr: np.ndarray,
+        left: HandPose,
+        right: HandPose,
+        seed: int,
     ) -> None:
-        left, right = self._ordered(hands)
         geo = self.box.solve(left, right)
         if geo is None:
             return  # 双手靠拢 → 整个盒子收起, 什么都不画; 拉开时自然出现
@@ -564,32 +453,3 @@ class VectorOverlayRenderer:
             gx = int(np.clip(x0 + lx + rng.randint(-GLITCH_SHIFT, GLITCH_SHIFT), 0, w - sw))
             strip = frame_bgr[y0 + ly : y0 + ly + sh, gx : gx + sw]
             cv2.copyTo(strip, mask[ly : ly + sh, lx : lx + sw], roi[ly : ly + sh, lx : lx + sw])
-
-    # ---------- banner: v2 TouchDesigner 四层横幅 ----------
-
-    def _draw_banner(self, canvas: np.ndarray, frame_bgr: np.ndarray, hands: list[HandPose]) -> None:
-        left, right = self._ordered(hands)
-        iL, tL, cL, _ = pinch(left)
-        iR, tR, cR, _ = pinch(right)
-        if float(np.linalg.norm(cR - cL)) < MIN_SPAN_PX:
-            return
-
-        def band(v0: float, v1: float, u0: float = 0.0, u1: float = 1.0) -> np.ndarray:
-            """v: 食指边(0)→拇指边(1)可越界; u: 左手(0)→右手(1)."""
-            rows = []
-            for v in (v0, v1):
-                lv = iL + (tL - iL) * v
-                rv = iR + (tR - iR) * v
-                rows.append((lv * (1 - u0) + rv * u0, lv * (1 - u1) + rv * u1))
-            (p00, p01), (p10, p11) = rows
-            return np.array([p00, p01, p11, p10], np.float32)
-
-        # 实测分层: 黄头带 / X-ray 中窗(左右内缩7%) / 白分隔线 / 悬出的红脚带
-        mid = band(0.20, 0.94, 0.07, 0.93)
-        fill(canvas, frame_bgr, mid, _fx_lut(XRAY_CMAP))
-        fill(canvas, frame_bgr, band(0.0, 0.20), _fx_lut(YELLOW_CMAP))
-        fill(canvas, frame_bgr, band(0.94, 1.02), _fx_lut(WHITE_CMAP))
-        fill(canvas, frame_bgr, band(1.02, 1.28), _fx_lut(RED_CMAP))
-        # 中窗左右侧缘的黄色细线(原效果唯一的"描边")
-        edge_line(canvas, mid[0], mid[3], BANNER_YELLOW, 2)
-        edge_line(canvas, mid[1], mid[2], BANNER_YELLOW, 2)
