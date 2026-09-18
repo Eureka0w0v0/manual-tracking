@@ -1,8 +1,8 @@
+**中文** · [English](README.en.md) · [日本語](README.ja.md)
+
 # manual-tracking
 
 实时手部特效（纯 Python）：MediaPipe 手部追踪 + OpenCV，把**折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TouchDesigner 横幅 / 霓虹骨架**五种效果贴在你自己的手上。一台 Mac、一个内置摄像头、不要 GPU，1080p 全程 30 fps。
-
-> **English:** Real-time hand effects in pure Python — MediaPipe Hand Landmarker + OpenCV. Five styles: an origami mirror sheet pinned to your fingertips, a parametric rigid glass box held between two hands, a physics-driven floating cube you can grab, turn, throw and explode, a TouchDesigner-style banner, and a neon wire skeleton. One webcam, no GPU, 1080p @ 30 fps on Apple Silicon. `./run.sh`, press `S` to cycle styles, `Q` to quit. Docs and comments are in Chinese; the code is small enough to read anyway.
 
 ![五种风格](docs/img/styles.jpg)
 
@@ -156,9 +156,9 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 
 ## 文档
 
-- [`docs/TUTORIAL.md`](docs/TUTORIAL.md)——使用教程：安装、每种手势、调参、录制、离线渲染与 JSON、改参数去哪、架构导览、加新风格、常见问题
-- [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md)——玻璃盒标定：每个常数怎么从原片反解、滤波与限幅的实测网格、试过被否掉的方案
-- [`docs/TOUCHDESIGNER_SETUP.md`](docs/TOUCHDESIGNER_SETUP.md)——想在 TouchDesigner 里做同类效果：torinmb/mediapipe-touchdesigner 插件安装
+- [`docs/TUTORIAL.md`](docs/TUTORIAL.md)——使用教程：安装、每种手势、调参、录制、离线渲染与 JSON、改参数去哪、架构导览、加新风格、常见问题（[English](docs/TUTORIAL.en.md) · [日本語](docs/TUTORIAL.ja.md)）
+- [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md)——玻璃盒标定：每个常数怎么从原片反解、滤波与限幅的实测网格、试过被否掉的方案（正文中文，开头有英/日摘要）
+- [`docs/TOUCHDESIGNER_SETUP.md`](docs/TOUCHDESIGNER_SETUP.md)——想在 TouchDesigner 里做同类效果：torinmb/mediapipe-touchdesigner 插件安装（正文中文，开头有英/日摘要）
 
 ## 来源与致谢
 

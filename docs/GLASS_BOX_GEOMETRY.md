@@ -1,5 +1,9 @@
 # 玻璃盒(screen)几何标定
 
+> **English** — Calibration log for the `screen` glass box: how every `BOX_*` constant in `glassbox.py` was solved from frame 312 of the reference clip (four corner points + the back/front edge ratio → box height 313 px, depth 461 px, camera pitch 47.6°, focal 1.10×), why the anchor sits at 85 % of the way from palm centre to finger-arc midpoint, the velocity-adaptive filter for the roll angle ψ (RMS error 14.76° → 2.35°), the expo mapping that pins both ends of the roll at ±180°, the angular-rate cap that brought face switching from 6.43/s down to 4.44/s without losing back-face visibility, and the ideas that were measured and rejected (dead zones, area hysteresis, linear gain). The body is Chinese; the tables and formulas are language-neutral. The reference clip itself is not in the repository.
+>
+> **日本語** — `screen`（ガラスの箱）のキャリブレーション記録です。`glassbox.py` の `BOX_*` 定数を元動画の 312 フレーム目からどう逆算したか（四隅 + 後辺/前辺の比 → 箱の高さ 313 px、奥行き 461 px、カメラ俯角 47.6°、焦点距離 1.10×）、アンカーが手のひら中心から指先の弧の中点へ 85 % の位置にある理由、回転角 ψ の速度適応フィルタ（RMS 誤差 14.76° → 2.35°）、回転の両端を ±180° に固定する expo 写像、面の切り替えを 6.43/秒から 4.44/秒に下げつつ背面の見えやすさを落とさなかった角速度上限、そして測って捨てた案（デッドゾーン、面積ヒステリシス、線形ゲイン）。本文は中国語ですが、表と式は言語に依存しません。元動画はリポジトリに含まれていません。
+
 `glassbox.py` 里 `BOX_*` 常数的来源。要改效果先看这里，别瞎调。
 
 （顶点序与弱透视投影本身在 `boxgeom.py`，`screen` 与 `cube` 共用同一份。）

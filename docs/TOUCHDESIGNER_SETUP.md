@@ -1,5 +1,9 @@
 # TouchDesigner + MediaPipe 安装指南
 
+> **English** — How to set up TouchDesigner with the torinmb/mediapipe-touchdesigner plugin (v0.5.2, TD 2023/2025, Mac + PC) to build the same kind of hand-driven effect natively in TD: download the release zip, enable External .tox, pick the webcam, turn on Hand tracking, read the 21 landmarks from the CHOP/DAT, and feed TD output back in via Spout (Windows) or Syphon → OBS virtual camera (macOS). Also notes on the Douyin clip this project imitates and its creator's public pages. Body in Chinese; the links and menu paths are the useful part.
+>
+> **日本語** — torinmb/mediapipe-touchdesigner プラグイン（v0.5.2、TD 2023/2025、Mac + PC）で、同じ種類の手のエフェクトを TouchDesigner 側で組むための導入手順です。release zip の取得、External .tox の有効化、Webcam の選択、Hand トラッキングをオンにして CHOP/DAT から 21 点を読む、TD の出力を Spout（Windows）や Syphon → OBS 仮想カメラ（macOS）で MediaPipe に戻す方法。このプロジェクトが真似た Douyin の動画と作者の公開ページについてのメモも。本文は中国語ですが、リンクとメニューのパスがそのまま使えます。
+
 对应抖音「Github上的TouchDesigner项目」那类**实时跟手特效**的常用底座。
 
 > 官方插件（标配）：**torinmb/mediapipe-touchdesigner**  
