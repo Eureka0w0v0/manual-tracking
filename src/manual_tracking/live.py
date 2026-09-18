@@ -233,6 +233,20 @@ class _Tick:
 _Handler = Callable[["_Tick", str], None]
 
 
+def _off_style(t: "_Tick", ch: str, styles: tuple[str, ...]) -> bool:
+    """当前风格用不上这个键 → 打一句提示并返回 True. styles 空 = 到处都管用.
+
+    原先这些键在**任何**风格下都照改不误: cube 里按 `[` `]` 改的是 screen 的
+    roll_expo, 终端还认真打印新值, 而画面纹丝不动; 反过来在 screen 里按 F
+    切的是 cube 的重力, 一样没有任何反馈。README 的键位表早就分成 screen 和
+    cube 两节了, 运行时却没有这一层 —— 只能靠记, 记错了还查不出来。
+    """
+    if not styles or t.renderer.style in styles:
+        return False
+    print(f"{ch} 只对 {'/'.join(styles)} 有用 (当前 {t.renderer.style})")
+    return True
+
+
 @dataclass(frozen=True)
 class _Knob:
     """按一下 ±一步、钳进 [lo, hi] 的旋钮 —— 七个调参键的共同形状.
@@ -240,6 +254,7 @@ class _Knob:
     dec/inc 各可写多个字符: `-`/`_` 与 `=`/`+` 是同一档的 shift 变体。
     owner="" 指 renderer 自己, 否则是它的子对象名(box / cube)。
     label="" 表示改完不打印(source_dim 原先就不打)。
+    styles 空 = 所有风格; 否则只在列出的风格里生效(见 _off_style)。
     """
 
     dec: str
@@ -253,8 +268,11 @@ class _Knob:
     label: str = ""
     unit: str = ""
     fmt: str = "{:.2f}"
+    styles: tuple[str, ...] = ()
 
     def apply(self, t: "_Tick", ch: str) -> None:
+        if _off_style(t, ch, self.styles):
+            return
         obj = getattr(t.renderer, self.owner) if self.owner else t.renderer
         step = self.step if ch in self.inc else -self.step
         val = float(np.clip(getattr(obj, self.attr) + step, self.lo, self.hi))
@@ -263,16 +281,33 @@ class _Knob:
             print(f"{self.label} → {self.fmt.format(val)}{self.unit}")
 
 
+# 除了底亮度, 其余六个旋钮改的都是 GlassBox 的字段 —— 只有 screen 读它们。
+_SCREEN = ("screen",)
 _KNOBS: tuple[_Knob, ...] = (
     _Knob("o", "p", "", "source_dim", 0.05, 0.05, 1.0, "o p 底亮度"),
-    _Knob("[", "]", "box", "roll_expo", 0.1, 0.6, 3.0, "[ ] 翻转曲线", "roll_expo"),
-    _Knob(";", "'", "box", "anchor_lift", 0.05, 0.0, 1.4, "; ' 挂多高", "anchor_lift"),
-    _Knob(",", ".", "box", "depth_bias", 0.05, 0.0, 1.0, ", . 旋转轴", "depth_bias"),
-    _Knob("-_", "=+", "box", "anchor_resp", 0.05, 0.05, 1.0, "- = 锚点跟手", "anchor_resp"),
-    _Knob("<", ">", "box", "gap_shut", 0.05, 0.05, 1.2, "< > 收起距离", "gap_shut"),
+    _Knob("[", "]", "box", "roll_expo", 0.1, 0.6, 3.0, "[ ] 翻转曲线", "roll_expo",
+          styles=_SCREEN),
+    _Knob(";", "'", "box", "anchor_lift", 0.05, 0.0, 1.4, "; ' 挂多高", "anchor_lift",
+          styles=_SCREEN),
+    _Knob(",", ".", "box", "depth_bias", 0.05, 0.0, 1.0, ", . 旋转轴", "depth_bias",
+          styles=_SCREEN),
+    _Knob("-_", "=+", "box", "anchor_resp", 0.05, 0.05, 1.0, "- = 锚点跟手", "anchor_resp",
+          styles=_SCREEN),
+    _Knob("<", ">", "box", "gap_shut", 0.05, 0.05, 1.2, "< > 收起距离", "gap_shut",
+          styles=_SCREEN),
     _Knob("7", "8", "box", "roll_max_rate", 5.0, 5.0, 90.0, "7 8 角速度上限",
-          "roll_max_rate", "°/帧", "{:.0f}"),
+          "roll_max_rate", "°/帧", "{:.0f}", styles=_SCREEN),
 )
+
+
+def _knob_hints(styles: tuple[str, ...]) -> str:
+    """开机横幅里属于某一档风格的那行旋钮说明 —— 横幅由 _KNOBS 生成, 不手抄.
+
+    手抄过, 漂过: glassbox 的注释一度写着 "live ( )" 而实际绑的是 "< >"。
+    **按风格分行**是为了和 _off_style 的运行时提示对得上 —— 横幅说这个键属于
+    哪个风格, 按下去时就该得到同一个说法。
+    """
+    return "  ".join(k.hint for k in _KNOBS if k.styles == styles)
 
 
 def _act_quit(t: _Tick, ch: str) -> None:
@@ -346,20 +381,33 @@ def _act_record(t: _Tick, ch: str) -> None:
     t.rec.toggle(t.out, t.fps_ema, t.warm)
 
 
+def _only(styles: tuple[str, ...], fn: _Handler) -> _Handler:
+    """把 handler 限在几个风格里 —— 与 _Knob.styles 同一条规则、同一句提示."""
+
+    def guarded(t: _Tick, ch: str) -> None:
+        if not _off_style(t, ch, styles):
+            fn(t, ch)
+
+    return guarded
+
+
+_BOXY = ("screen", "cube")  # 两种有盒子的风格共用: 通透度 / 棱线 / 旋转跟手
+_CUBE = ("cube",)
+
 # 形状各异、进不了 _KNOBS 的键(理由写在各自的 docstring 里)
 _ACTIONS: dict[str, _Handler] = {
     "q": _act_quit,
     "\x1b": _act_quit,  # Esc
     "s": _act_style,
     "d": _act_bg,
-    "g": _act_alpha,
-    "h": _act_alpha,
-    "{": _act_edge,
-    "}": _act_edge,
-    "9": _act_spin,
-    "0": _act_spin,
-    "f": _act_gravity,
-    "x": _act_cube_reset,
+    "g": _only(_BOXY, _act_alpha),
+    "h": _only(_BOXY, _act_alpha),
+    "{": _only(_BOXY, _act_edge),
+    "}": _only(_BOXY, _act_edge),
+    "9": _only(_BOXY, _act_spin),
+    "0": _only(_BOXY, _act_spin),
+    "f": _only(_CUBE, _act_gravity),
+    "x": _only(_CUBE, _act_cube_reset),
     "r": _act_record,
 }
 
@@ -488,12 +536,9 @@ def run_live(
         f"  帧率 {fps_txt} (req {fps if fps > 0 else 30})  推理边 {infer_txt}"
     )
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
-    print("  Q退出 | S风格 | D暗底 | R录制")
-    # 旋钮那半从 _KNOBS 生成 —— 手抄过, 漂过(glassbox 的注释一度写 "( )" 而
-    # 实际绑的是 "< >")。形状各异的那几个键留在下面一行手写。
-    knob_hints = "  ".join(k.hint for k in _KNOBS)
-    print(f"  调参: {knob_hints}")
-    print("        9 0 旋转跟手  g h 通透  { } 棱线")
+    print(f"  Q退出 | S风格 | D暗底 | R录制 | {_knob_hints(())}")
+    print(f"  screen 调参: {_knob_hints(_SCREEN)}")
+    print("  screen/cube: 9 0 旋转跟手  g h 通透  { } 棱线")
     print("  cube  操作: 捏在盒上拖=转 | 双手捏住=移动+缩放+拧 | 张开手=炸开")
     print("              F 重力开关 | X 归位")
     print("=" * 56)
