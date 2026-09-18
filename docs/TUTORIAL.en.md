@@ -243,7 +243,7 @@ Press a key the current style cannot use and the terminal says `[ 只对 screen 
 | `7` `8` | `roll_max_rate` | angular-rate cap in °/frame. This is the main control against "colour flicker": it blocks the jumps caused by the palm-orientation signal flipping sign in saturation. Default 10 = 300°/s, still above real hand speed; 8 would clip real motion |
 | `;` `'` | `anchor_lift` | how high the box hangs: 0 = palm centre (low), 1 = finger-arc midpoint (where the reference clip has it), default 0.85 |
 | `,` `.` | `depth_bias` | the fixed point of rotation about the axis: 0 = front face on the hands, 0.5 = centre (default, the box turns around the hands as a whole), 1 = back face |
-| `-` `=` | `anchor_resp` | anchor responsiveness: large = follows, small = steady but dull. Opens up automatically when the hands move fast (velocity-adaptive) |
+| `-` `=` (or `_` `+`) | `anchor_resp` | anchor responsiveness: large = follows, small = steady but dull. Opens up automatically when the hands move fast (velocity-adaptive) |
 | `<` `>` | `gap_shut` | how close the hands must get to fold the box away (normalised by palm width, so independent of distance to the camera). Reappear threshold = this + 0.40 |
 
 ### cube only
