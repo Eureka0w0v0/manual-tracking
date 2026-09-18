@@ -111,7 +111,7 @@ HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check main.py src tools tests                # 静态检查（配置在 pyproject.toml）
-.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，153 条，<1 秒
+.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，163 条，<1 秒
 PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，27 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数
@@ -121,7 +121,7 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 
 | 层 | 位置 | 挡什么 | 依赖 |
 |---|---|---|---|
-| 契约 | `tests/` | 改错了会崩：面拓扑与顶点序对齐、effect 的尺寸/不可变契约、盒子刚性、别名表、handedness 滞回、外推与录制帧率、键位分流 | 无（合成手，不读素材） |
+| 契约 | `tests/` | 改错了会崩：面拓扑与顶点序对齐、effect 的尺寸/不可变契约、盒子刚性、别名表、handedness 滞回、外推与录制帧率、键位分流、入口默认值、模型下载校验、收尾释放 | 无（合成手，不读素材） |
 | 手感 | `tools/cube_check.py` | 拖不动、转回头、松手乱飘、撑出画面 | 无（合成手） |
 | 回归 | `tools/e2e_check.py` | 改差了不好用：颜色频闪、背面读不出 | 样片 + 模型 |
 
@@ -129,7 +129,7 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 （`.github/workflows/ci.yml`）。**第三层留在本地** —— CI 绿了不代表没有频闪。
 
 改完 `screen` 的几何/映射/滤波必须跑 `e2e_check`：它是唯一能发现「可见面每秒切换
-5 次」这类体感灾难的手段——`tests/` 那 153 条全绿也照样看不见频闪。基线与结论见
+5 次」这类体感灾难的手段——`tests/` 那 163 条全绿也照样看不见频闪。基线与结论见
 [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md) §3.6–3.8。
 
 `tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手（21 个 landmark 全铺满：

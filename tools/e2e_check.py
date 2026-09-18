@@ -27,13 +27,16 @@ from manual_tracking.paths import ensure_model  # noqa: E402
 from manual_tracking.renderer import VectorOverlayRenderer  # noqa: E402
 from manual_tracking.tracker import HandTracker  # noqa: E402
 
-# ---- 手感底线(数字见 docs/GLASS_BOX_GEOMETRY.md §3.6 的 expo×cap 网格) ----
+# ---- 手感底线(数字见 docs/GLASS_BOX_GEOMETRY.md §3.7 的 expo×cap 网格) ----
 # 卡的是"越过体感红线", 不是"跟上次一模一样": 后两条留了余量, 正常调参不会
-# 误报。切换率上限就是 5.0 本身 —— 当前默认档 4.87 只剩 0.13 的余量, 那是
-# 有意的, 这条线越过去肉眼直接看得见颜色在闪。
-MAX_SWITCH_PER_SEC = 5.0  # 可见面组合每秒变化次数
-MIN_BACK_HALF = 0.30  # "背面占可见面积一半以上"的帧占比下限(当前 36.4%)
-MIN_BACK_SEEN = 0.45  # "看得见背面"的帧占比下限(当前 54.5%)
+# 误报。切换率上限就是 5.0 本身 —— 这条线越过去肉眼直接看得见颜色在闪。
+# "当前"是 2026-09-18 默认档的实测(n=142)。07-26 首次写下时是 4.87 / 36.4% /
+# 54.5%(n=154): bd14ed9 给收起/出现加了 ~0.17s 过渡并让下面 run() 跳过过渡帧,
+# 那 12 帧压扁/长出的面组合变化不再算切换, 数字整体变好(逐 commit 二分确认)。
+# 改了几何/映射/滤波就重跑, 别拿旧数当基线。
+MAX_SWITCH_PER_SEC = 5.0  # 可见面组合每秒变化次数(当前 4.44)
+MIN_BACK_HALF = 0.30  # "背面占可见面积一半以上"的帧占比下限(当前 39.4%)
+MIN_BACK_SEEN = 0.45  # "看得见背面"的帧占比下限(当前 57.7%)
 
 
 def load(path="assets/sample.mp4"):
