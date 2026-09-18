@@ -1,12 +1,13 @@
 """live.py 里那几段**纯逻辑**的契约 —— 不开摄像头, 不进主循环.
 
-`run_live()` 本身要摄像头, 测不了; 但它周围这几样都是可以离线钉死的, 而且
-每一样都对应一次踩过的坑(注释里写着实测数字), 在这之前却一条断言都没有
+`run_live()` 本身要摄像头, 主循环测不了; 但它周围这几样都是可以离线钉死的,
+而且每一样都对应一次踩过的坑(注释里写着实测数字), 在这之前却一条断言都没有
 (速度外推的那份跟着代码去了 test_detect_service.py):
 
   _Recorder     录制帧率的两道坎(未热身 / 停录后按实测重封装)
   _build_keymap 撞键当场炸(平铺 if 时代它是**静默双触发**)
   _key_char     字母统一小写, 但 ","/"<" 是两档不同的旋钮, 不能一起并掉
+  _shutdown     摄像头打开之后任何一步炸了, 句柄都得放掉(周边全换成假的)
 
 这些坏掉的时候, ruff / pytest / cube_check 全都照样绿, 症状要等到"录出来的
 片子慢放 67%"或者"按一个键跑了两条分支"才浮出来 —— 正是最该有断言的地方。
@@ -287,3 +288,64 @@ def test_unprintable_keys_are_dropped():
     """方向键之类的返回值不该撞进查表."""
     assert live._key_char(0) == ""
     assert live._key_char(200) == ""
+
+
+# ---------- 资源释放 ----------
+
+
+class _FakeCap:
+    """替掉摄像头: 一帧都不给, 主循环第一次 read 就退出."""
+
+    def __init__(self) -> None:
+        self.released = False
+
+    def get(self, prop) -> float:
+        return 0.0
+
+    def read(self):
+        return False, None
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _FakeTracker:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def headless(monkeypatch, tmp_path):
+    """run_live 的周边全换成假的: 不加载模型、不开摄像头、不建窗口."""
+    cap, tracker = _FakeCap(), _FakeTracker()
+    monkeypatch.setattr(live, "ensure_model", lambda p: tmp_path / "m.task")
+    monkeypatch.setattr(live, "HandTracker", lambda *a, **k: tracker)
+    monkeypatch.setattr(live, "_open_camera", lambda *a, **k: cap)
+    for name in ("namedWindow", "resizeWindow", "destroyAllWindows", "imshow"):
+        monkeypatch.setattr(live.cv2, name, lambda *a, **k: None)
+    monkeypatch.setattr(live.cv2, "waitKey", lambda *a, **k: -1)
+    return cap, tracker
+
+
+def test_a_failure_after_the_camera_opened_still_releases_it(headless, monkeypatch):
+    """开窗 / 建录制器 / 起检测线程原先都在 try 之外: 任一抛异常, 摄像头句柄就
+    一直占到进程退出 —— macOS 上表现为下一次启动"打不开摄像头"。"""
+    cap, tracker = headless
+
+    def boom(*a, **k):
+        raise RuntimeError("no display")
+
+    monkeypatch.setattr(live.cv2, "namedWindow", boom)
+    with pytest.raises(RuntimeError, match="no display"):
+        live.run_live(camera=0)  # camera=0: 不去问 system_profiler
+    assert cap.released and tracker.closed
+
+
+def test_a_camera_that_stops_delivering_frames_shuts_down_cleanly(headless):
+    """读帧失败退出主循环: 摄像头 / 检测线程 / landmarker 全部释放, 不抛."""
+    cap, tracker = headless
+    live.run_live(camera=0)
+    assert cap.released and tracker.closed

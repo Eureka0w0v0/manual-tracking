@@ -502,6 +502,44 @@ def _open_camera(camera: int, width: int, height: int, fps: int = 0) -> cv2.Vide
     )
 
 
+def _shutdown(
+    cap: cv2.VideoCapture,
+    tracker: HandTracker,
+    rec: _Recorder | None,
+    detector: AsyncHandDetector | None,
+) -> None:
+    """run_live 的收尾: 摄像头一旦打开就必须走到这里, 不管后面哪一步炸了.
+
+    rec / detector 允许是 None —— 开窗、建录制器、起检测线程都排在摄像头之后,
+    其中任何一步抛异常时后面的还没建出来, 但摄像头(和可能已经开的窗口)已经
+    占着了。原先这几步在 try 之外, 开窗失败摄像头句柄就一直占到进程退出。
+
+    释放顺序按"用户可感知的损失"排: 录像文件和摄像头最先, 因为 MediaPipe
+    graph 关闭万一抛异常, 后面的语句就都不执行了 —— 那会留下一个没写
+    moov box 的坏 mp4(实测 未 release 1.31MB 打不开 / release 后 1.56MB 正常)。
+    每个 release 各自 try, 一个失败不拖累其余。
+    """
+    for label, fn in (
+        ("writer", None if rec is None else rec.release),
+        ("camera", cap.release),
+        ("window", cv2.destroyAllWindows),
+    ):
+        if fn is None:
+            continue
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - 清理阶段, 记录后继续
+            print(f"释放 {label} 失败: {exc!r}")
+    for _ in range(5):
+        cv2.waitKey(1)
+    # worker 卡住时不销毁 native landmarker(否则是未定义行为), 宁可泄漏
+    # 一个句柄 —— 进程随后就退出了, OS 会回收。
+    if detector is None or detector.close():
+        tracker.close()
+    else:
+        print("警告: 检测线程未在 3s 内退出, 跳过 landmarker 销毁")
+
+
 def run_live(
     *,
     camera: int = -1,
@@ -547,51 +585,55 @@ def run_live(
     except Exception:
         tracker.close()
         raise
-    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
-    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height)
-    actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-
-    # 可缩放窗口: 默认 AUTOSIZE 会把窗口钉死在采集分辨率上, Retina 屏(3456x2234)
-    # 下一个 1280x720 的窗口很小。WINDOW_NORMAL 允许拖拽边角任意放大, 初始尺寸
-    # 按 window_scale 给。放大只影响显示, 不改采集/检测/录制分辨率。
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
-    cv2.resizeWindow(
-        window_name, int(actual_w * window_scale), int(actual_h * window_scale)
-    )
-
-    rec = _Recorder(record)
-    # 按键 handler 的上下文; out/fps_ema/warm 在真按了键的那一帧才刷
-    tick = _Tick(renderer, rec, np.empty((1, 1, 3), np.uint8))
-
-    print("=" * 56)
-    print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅")
-    print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
-    infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
-    fps_txt = f"{actual_fps:.0f}" if actual_fps > 0 else "?"
-    print(
-        f"  采集 {actual_w}x{actual_h} (req {width}x{height})"
-        f"  帧率 {fps_txt} (req {fps if fps > 0 else 30})  推理边 {infer_txt}"
-    )
-    print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
-    for line in _banner_lines():
-        print(f"  {line}")
-    print("  cube  手势: 捏在盒上拖=转 | 双手捏住=移动+缩放+拧 | 张开手=炸开")
-    print("=" * 56)
-
-    frame_index = 0
-    fps_ema = 0.0
-    draw_ms_ema = 0.0
-    last_ts = -1
-
-    detector = AsyncHandDetector(tracker)
-
-    # 计时基准必须在模型加载(实测 133ms)之后取, 否则第一帧的瞬时 FPS 只有 ~6,
-    # 而它会直接播种 fps_ema(α=0.15 要 ~30 帧才收敛)。启动 1 秒内按 R 录制,
-    # fps_rec 就会冻结在这个坏值上 —— 实测第 1 帧按 R 得到 10fps, 成片慢放 67%。
-    t0 = time.perf_counter()
-    last_t = t0
-
+    # 从这里起摄像头已被占住: 开窗 / 录制器 / 检测线程都在同一个 try 里, 任何
+    # 一步抛异常都走 _shutdown。rec / detector 先置 None, 收尾时按需跳过。
+    rec: _Recorder | None = None
+    detector: AsyncHandDetector | None = None
     try:
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height)
+        actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+
+        # 可缩放窗口: 默认 AUTOSIZE 会把窗口钉死在采集分辨率上, Retina 屏(3456x2234)
+        # 下一个 1280x720 的窗口很小。WINDOW_NORMAL 允许拖拽边角任意放大, 初始尺寸
+        # 按 window_scale 给。放大只影响显示, 不改采集/检测/录制分辨率。
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.resizeWindow(
+            window_name, int(actual_w * window_scale), int(actual_h * window_scale)
+        )
+
+        rec = _Recorder(record)
+        # 按键 handler 的上下文; out/fps_ema/warm 在真按了键的那一帧才刷
+        tick = _Tick(renderer, rec, np.empty((1, 1, 3), np.uint8))
+
+        print("=" * 56)
+        print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅")
+        print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
+        infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
+        fps_txt = f"{actual_fps:.0f}" if actual_fps > 0 else "?"
+        print(
+            f"  采集 {actual_w}x{actual_h} (req {width}x{height})"
+            f"  帧率 {fps_txt} (req {fps if fps > 0 else 30})  推理边 {infer_txt}"
+        )
+        print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
+        for line in _banner_lines():
+            print(f"  {line}")
+        print("  cube  手势: 捏在盒上拖=转 | 双手捏住=移动+缩放+拧 | 张开手=炸开")
+        print("=" * 56)
+
+        frame_index = 0
+        fps_ema = 0.0
+        draw_ms_ema = 0.0
+        last_ts = -1
+
+        detector = AsyncHandDetector(tracker)
+
+        # 计时基准必须在模型加载(实测 133ms)之后取, 否则第一帧的瞬时 FPS 只有 ~6,
+        # 而它会直接播种 fps_ema(α=0.15 要 ~30 帧才收敛)。启动 1 秒内按 R 录制,
+        # fps_rec 就会冻结在这个坏值上 —— 实测第 1 帧按 R 得到 10fps, 成片慢放 67%。
+        t0 = time.perf_counter()
+        last_t = t0
+
         while True:
             ok, frame = cap.read()
             if not ok or frame is None:
@@ -652,26 +694,4 @@ def run_live(
 
             frame_index += 1
     finally:
-        # 释放顺序按"用户可感知的损失"排: 录像文件和摄像头最先, 因为 MediaPipe
-        # graph 关闭万一抛异常, 后面的语句就都不执行了 —— 那会留下一个没写
-        # moov box 的坏 mp4(实测 未 release 1.31MB 打不开 / release 后 1.56MB 正常)。
-        # 每个 release 各自 try, 一个失败不拖累其余。
-        for label, fn in (
-            ("writer", rec.release),
-            ("camera", cap.release),
-            ("window", cv2.destroyAllWindows),
-        ):
-            if fn is None:
-                continue
-            try:
-                fn()
-            except Exception as exc:  # noqa: BLE001 - 清理阶段, 记录后继续
-                print(f"释放 {label} 失败: {exc!r}")
-        for _ in range(5):
-            cv2.waitKey(1)
-        # worker 卡住时不销毁 native landmarker(否则是未定义行为), 宁可泄漏
-        # 一个句柄 —— 进程随后就退出了, OS 会回收。
-        if detector.close():
-            tracker.close()
-        else:
-            print("警告: 检测线程未在 3s 内退出, 跳过 landmarker 销毁")
+        _shutdown(cap, tracker, rec, detector)
