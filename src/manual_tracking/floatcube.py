@@ -433,6 +433,11 @@ class FloatCube:
         if abs(z) > 1e-4:
             self._rescale(1.0 + z, shape)
             self._zoom *= ZOOM_DAMP
+            # 长大**之后**必须再钳一次: 上面 _glide 那趟用的是放大前的半边长,
+            # 贴着边松手时盒子会顺着缩放惯性把自己撑出画面(实测右下角松手、
+            # _zoom 顶格 0.04, 20 帧内边长 158→181px, 右缘越界 20px)。
+            # _clamp_pos 那句"推出去就只能按 X 归位"得是没有旁路的。
+            self._clamp_pos(shape)
         self.mode = MODE_IDLE
 
     def _glide(self, shape: tuple[int, int]) -> None:

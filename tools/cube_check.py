@@ -25,6 +25,7 @@ from manual_tracking.floatcube import (  # noqa: E402
     RIPPLE_LIFE,
     TURN_MAX_RAD,
     TURN_RESP,
+    ZOOM_CARRY_MAX,
     FloatCube,
 )
 from manual_tracking.landmarks import THUMB_TIP  # noqa: E402
@@ -285,7 +286,25 @@ def main() -> int:
         f"最远推到 {mx:.0f} (墙 {wall:.0f}), 弹回停在 {c.pos[0]:.0f}",
     )
 
-    # 16) 炸开状态机: 张开的手 → 炸开; 握拳 → 合拢; 捏住的手不参与
+    # 16) 松手后的**缩放**惯性同样不许把盒子撑出画面。这条与 15) 是两个出口:
+    #     那边是平移速度撞墙, 这边是位置没动、边长自己长了 —— _glide 那趟
+    #     钳位用的是放大**前**的半边长, 长完不再钳的话贴边松手就啃出画面。
+    c = FloatCube()
+    c.update([], SHAPE)
+    c.pos = np.array([SHAPE[1] - c.size * 0.5, SHAPE[0] - c.size * 0.5], np.float32)  # 贴右下角
+    c._zoom = ZOOM_CARRY_MAX  # 松手带走顶格的缩放动量
+    grew0 = c.size
+    for _ in range(20):
+        c.update([], SHAPE)
+    m = c.size * 0.5
+    good &= check(
+        "缩放惯性不把盒子撑出画面",
+        c.size > grew0 and c.pos[0] + m <= SHAPE[1] + 1e-3 and c.pos[1] + m <= SHAPE[0] + 1e-3,
+        f"边长 {grew0:.0f}→{c.size:.0f}px, 右缘 {c.pos[0] + m:.0f} (墙 {SHAPE[1]}), "
+        f"下缘 {c.pos[1] + m:.0f} (墙 {SHAPE[0]})",
+    )
+
+    # 17) 炸开状态机: 张开的手 → 炸开; 握拳 → 合拢; 捏住的手不参与
     c = FloatCube()
     for _ in range(30):
         c.update([hand(640, 400, pinch=False, spread=2.0)], SHAPE)
@@ -302,7 +321,7 @@ def main() -> int:
         f"张开→{ex_open:.2f}, 握拳→{ex_fist:.2f}, 捏住张开→{c2.explode:.2f}",
     )
 
-    # 17) 抓握涟漪: 捏合成立的一瞬出生(age 0), 活满 RIPPLE_LIFE 帧后消失
+    # 18) 抓握涟漪: 捏合成立的一瞬出生(age 0), 活满 RIPPLE_LIFE 帧后消失
     c = FloatCube()
     c.update([hand(640, 456, pinch=False)], SHAPE)
     c.update([hand(640, 456, pinch=True)], SHAPE)  # 在盒上捏合 → 抓取建立
@@ -315,7 +334,7 @@ def main() -> int:
         f"捏合瞬间 1 圈 age0, {RIPPLE_LIFE + 1} 帧后剩 {len(c.ripples)} 圈",
     )
 
-    # 18) 抓取语义: 捏合判据是拇指/食指的 2D 投影距离, 手朝镜头一伸就会误判
+    # 19) 抓取语义: 捏合判据是拇指/食指的 2D 投影距离, 手朝镜头一伸就会误判
     #     成"捏住"(哥哥实拍复现: 双手一碰盒子就乱跑)。位置条件挡住它 ——
     #     捏在空气里拖, 盒子必须纹丝不动(只剩 idle 的悠闲自转)。
     c = FloatCube()
@@ -331,13 +350,13 @@ def main() -> int:
         f"远处捏着拖 10 帧: 只转 {turned:.1f}° (纯 drift), 位移 {moved:.2f}px",
     )
 
-    # 19) 抓握涟漪只发给"真抓住": 捏在空气里没有回执
+    # 20) 抓握涟漪只发给"真抓住": 捏在空气里没有回执
     c = FloatCube()
     c.update([hand(200, 620, pinch=False)], SHAPE)
     c.update([hand(200, 620, pinch=True)], SHAPE)  # 空气里捏合
     good &= check("捏空气无涟漪", len(c.ripples) == 0, f"空捏后涟漪 {len(c.ripples)} 圈")
 
-    # 20) 检测掉几帧不脱手: MediaPipe 快速移动/翻腕遮挡时丢 1-3 帧是常态。
+    # 21) 检测掉几帧不脱手: MediaPipe 快速移动/翻腕遮挡时丢 1-3 帧是常态。
     #     抓取状态按 GRAB_TTL 冻结 —— 手回来时哪怕已被拖出盒子半径, 也直接
     #     续上继续控制(没有宽限的话, 半路脱手后永远抓不回去)。
     c = FloatCube()
@@ -353,7 +372,7 @@ def main() -> int:
         f"丢 3 帧后回来(盒外)仍抓着, 模式 {c.mode}",
     )
 
-    # 21) 宽限耗尽才真正断: 长时间丢手不该永远赖着
+    # 22) 宽限耗尽才真正断: 长时间丢手不该永远赖着
     for _ in range(GRAB_TTL + 1):
         c.update([], SHAPE)
     c.update([hand(900, 456, pinch=True, tid=5)], SHAPE)  # 回来时在盒外 → 建立不上
@@ -363,7 +382,7 @@ def main() -> int:
         f"丢 {GRAB_TTL + 1} 帧后回来(盒外), 抓取已断",
     )
 
-    # 22) 单帧"松开"尖峰不断捏: 拖动翻腕时指尖被手背遮挡, landmark 乱跳一帧
+    # 23) 单帧"松开"尖峰不断捏: 拖动翻腕时指尖被手背遮挡, landmark 乱跳一帧
     #     把比值冲过 PINCH_OFF 很常见 —— 那是误检不是松手, 要连帧确认。
     c = FloatCube()
     c.update([hand(640, 456, pinch=True, tid=7)], SHAPE)
@@ -379,7 +398,7 @@ def main() -> int:
         f"尖峰 1 帧仍捏着={one}, 恢复={back}, 连续 {PINCH_OFF_FRAMES} 帧后才松",
     )
 
-    # 23) 掉帧回来, 捏合**滞回**也要还在: 比值 0.5 落在 ON(0.42)~OFF(0.62)
+    # 24) 掉帧回来, 捏合**滞回**也要还在: 比值 0.5 落在 ON(0.42)~OFF(0.62)
     #     之间, 全靠滞回撑着"仍在捏"。若掉帧把 _pinch 清了, 回来按新手从严
     #     判(须 <ON) → 明明还捏着却被判松 → 抓取从下面被拆台, TTL 白保。
     c = FloatCube()
@@ -397,7 +416,7 @@ def main() -> int:
         f"滞回捏合={still}, 掉 3 帧回来仍抓着={c._grabbing.get(9, False)}",
     )
 
-    # 24) 双手拧转 = 第三轴: 两手绕连线中点拧 90°, 立方体绕屏幕法线跟转,
+    # 25) 双手拧转 = 第三轴: 两手绕连线中点拧 90°, 立方体绕屏幕法线跟转,
     #     z 轴本身纹丝不动(纯 roll, 不携带别的轴)。
     c = FloatCube()
     c.update(pair2(640, half=100, cy=456), SHAPE)  # 水平抓住(捏点即盒心高度)
@@ -419,7 +438,7 @@ def main() -> int:
         f"两手拧 90° → 绕屏幕法线转 {twisted:.0f}° (RESP 滞后), z 轴漂移 {z_drift:.3f}",
     )
 
-    # 25) 重力: 松手走抛物线, 落地反弹几次后躺平, 永不穿地板
+    # 26) 重力: 松手走抛物线, 落地反弹几次后躺平, 永不穿地板
     c = FloatCube()
     c.update([], SHAPE)
     c.gravity = True
