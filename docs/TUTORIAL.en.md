@@ -88,7 +88,7 @@ and a failure in one step never blocks the others (so force-quitting mid-recordi
 
 ```
 ========================================================
-  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅
+  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体
   拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线
   采集 1920x1080 (req 1920x1080)  帧率 30 (req 30)  推理边 全帧
   窗口 1920x1080 (可拖拽边角缩放)
@@ -133,14 +133,14 @@ The HUD uses OpenCV's Hershey font, which **only knows ASCII**, hence the abbrev
 ### 2.3 The picture
 
 - The camera background is dimmed to 55 % by default (`D` switches to black, `o`/`p` adjust brightness); the effect is the subject.
-- Skeleton: gold is the first hand, orange the second, fingertip dots one size larger than the other joints. `wire` replaces the skeleton with neon.
+- Skeleton: gold is the first hand, orange the second, fingertip dots one size larger than the other joints.
 - The picture is **mirrored** by default (like a mirror, so left/right match intuition). `--no-mirror` turns that off.
 
 ---
 
 ## 3. How to play each style
 
-`S` cycles `mirror → screen → cube → banner → wire`. `--style` picks one directly.
+`S` cycles `mirror → screen → cube`. `--style` picks one directly.
 
 First, gesture hygiene that applies to everything:
 
@@ -208,14 +208,6 @@ One **known limit**: palm orientation is a cosine-shaped signal that goes `0→+
 - **Turn one hand**: that half darkens, cools towards grey, and its sampling point shifts outward — the paper folds.
 - Offset the hands until the top edge crosses the bottom edge: the sheet twists into two triangular wings, the right one in front.
 - **Pinch both hands shut** (gap < 16 px): the sheet turns edge-on, only two white lines with a slit between them.
-
-### 3.4 banner — TouchDesigner-style banner
-
-The same four corners as `mirror` (index tips on top, thumb tips below), but the content is four bands: a yellow-threshold head band / a pale X-ray middle window (inset 7 % left and right, with yellow side lines) / a white soft-threshold separator / a red foot band hanging out of the frame. All of it is a screen-space duotone of the camera image; no outline.
-
-### 3.5 wire — neon wire skeleton
-
-No gesture needed, just put a hand in the frame: glow + core line + light dots flowing along the bones. The cheapest style — no box geometry, no background sampling. When things stutter, use it to check whether detection itself is stable.
 
 ---
 
@@ -286,7 +278,7 @@ Three subcommands. No arguments = `live` (style from `live.DEFAULT_STYLE`, curre
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--style` | `cube` | `mirror` / `screen` / `cube` / `banner` / `wire`; legacy names `fabric`→mirror, `track`→screen, `outline`→wire still work |
+| `--style` | `cube` | `mirror` / `screen` / `cube`; legacy names `fabric`→mirror, `track`→screen still work |
 | `--camera` | `-1` | camera index; −1 = auto-pick the built-in one (skipping iPhone Continuity Camera) |
 | `--width` `--height` | 1920 × 1080 | requested capture size. If the device delivers something else, frames are resized to this so the effect coordinate system stays consistent |
 | `--fps` | 0 (=30) | **requested** frame rate. 60 needs camera support; detection takes 6.9 ms median, so 60 Hz is fed fine |
@@ -347,7 +339,7 @@ All tunables sit at the **top of the module that owns them**, each with a one-li
 | glass-box geometry and filtering | `src/manual_tracking/glassbox.py` | box too flat → `BOX_H_GAIN`; depth → `BOX_DEPTH_RATIO`; colour flicker → `BOX_ROLL_MAX_RATE` (read `docs/GLASS_BOX_GEOMETRY.md` §3.7 first, don't guess) |
 | the six face treatments | `src/manual_tracking/effects.py` | colours → `RISO_DARK` / `DUOTONE_*` / `PC_TINT`…; which face gets which treatment → the six lines of `BOX_FACES` |
 | glass transparency / edges / lighting | `src/manual_tracking/renderer.py` | `BOX_FACE_ALPHA`, `BOX_BACK_ALPHA`, `BOX_EDGE_W`, `_LIGHT`, `SHADE_MIN` |
-| mirror sheet / banner / neon | `sheet.py` / `banner.py` / `neon.py` | sheet brightness swing `B_SWING`; band proportions in `band(...)`; glow radius `GLOW_BLUR` |
+| the mirror sheet | `sheet.py` | brightness swing `B_SWING`, fold sampling shift `MIRROR_SHIFT`, pinch-shut threshold `PINCH_SHUT_PX` |
 | hand filtering | `src/manual_tracking/tracker.py` | jittery → lower `OE_MIN_CUTOFF` to 0.6; laggy → raise to 1.5 |
 | detection latency compensation | `src/manual_tracking/detect_service.py` | `EXTRAP_CAP_MS` / `EXTRAP_DAMP` / `EXTRAP_MAX_PX` |
 | live keys | `src/manual_tracking/live.py` | the `_KNOBS` (±step knobs) and `_ACTIONS` (everything else) tables; a duplicate key blows up at startup |
@@ -374,7 +366,7 @@ camera ──cap.read()──▶ main thread                                    
                         ├─renderer.render(frame, hands)
                         │    ├─ cube:   floatcube.update → project → fill six faces
                         │    ├─ screen: glassbox.solve → fill six faces
-                        │    ├─ mirror / banner / wire: sheet / banner / neon
+                        │    ├─ mirror: sheet
                         │    └─ skeleton
                         ├─recorder.write(out)      ← recorded before the HUD is drawn
                         └─HUD → imshow → waitKey → key table dispatch
@@ -396,7 +388,7 @@ Two decisions make it "follow the hand":
 ```
 paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom ──▶ glassbox / floatcube
                                                      │                │
-                                     effects ──▶ paint ──▶ sheet / banner / neon ──▶ renderer ──▶ detect_service ──▶ live ──▶ __main__
+                                     effects ──▶ paint ──▶ sheet ──▶ renderer ──▶ detect_service ──▶ live ──▶ __main__
 ```
 
 | Module | Does exactly one thing |
@@ -408,7 +400,7 @@ paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom
 | `floatcube.py` | the cube with a pose: grab test, the drag / two-hand / inertia / gravity / explode state machine. Touches no canvas |
 | `effects.py` | the six pixel treatments (pure `src → out` functions, parameters baked into lookup tables at construction). Knows nothing about "hands" |
 | `paint.py` | fills a polygon with "the background after some treatment" (bbox-local window + mask + alpha + shading). Knows nothing about hands or boxes |
-| `sheet / banner / neon.py` | the three box-less styles |
+| `sheet.py` | the mirror sheet (the one style without a box) |
 | `renderer.py` | dispatch by style; face ordering for `screen`/`cube` (3D outward-normal visibility + far-to-near + Lambert shading); background cache; left/right role hysteresis |
 | `detect_service.py` | detection thread + extrapolation |
 | `live.py` | camera, recording, HUD, keys, main loop |
@@ -421,8 +413,6 @@ Dependencies only point to the right; ruff's isort rule pins the import order to
 | Style | draw mean | p95 |
 |---|---|---|
 | mirror | 0.66 ms | 0.88 |
-| banner | 0.85 | 1.20 |
-| wire | 2.40 | 2.77 |
 | cube | 3.55 | 5.21 |
 | screen | 4.05 | 6.49 |
 
@@ -435,7 +425,7 @@ Detection (6.9 ms median) runs on the other thread. Less than a fifth of the 33 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt                # ruff + pytest
 .venv/bin/ruff check main.py src tools tests                 # 1. static checks (incl. isort)
-.venv/bin/pytest                                             # 2. contracts: 163 tests, <1 s, no camera / media / model
+.venv/bin/pytest                                             # 2. contracts: 158 tests, <1 s, no camera / media / model
 PYTHONPATH=src .venv/bin/python tools/cube_check.py          # 3. cube feel baseline: 27 assertions, synthetic hands
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py           # 4. screen regression: needs sample clip + model, ~1 min
 ```

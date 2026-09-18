@@ -7,7 +7,7 @@
 - [0. 必要なもの](#0-必要なもの)
 - [1. インストールと初回起動](#1-インストールと初回起動)
 - [2. 画面に出ているものの意味](#2-画面に出ているものの意味)
-- [3. 5 つのスタイルの遊び方](#3-5-つのスタイルの遊び方)
+- [3. 3 つのスタイルの遊び方](#3-3-つのスタイルの遊び方)
 - [4. リアルタイム調整](#4-リアルタイム調整)
 - [5. 録画](#5-録画)
 - [6. コマンドライン完全リファレンス](#6-コマンドライン完全リファレンス)
@@ -87,7 +87,7 @@ PYTHONPATH=src .venv/bin/python -m manual_tracking live --style cube
 
 ```
 ========================================================
-  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅
+  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体
   拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线
   采集 1920x1080 (req 1920x1080)  帧率 30 (req 30)  推理边 全帧
   窗口 1920x1080 (可拖拽边角缩放)
@@ -132,14 +132,14 @@ HUD は OpenCV の Hershey フォントで描いていて、**ASCII しか出せ
 ### 2.3 映像
 
 - カメラ背景はデフォルトで明るさ 55 % に落としてあります（`D` で黒背景、`o`/`p` で明るさ調整）。主役はエフェクトなので。
-- 骨格は、1 つ目の手が金色、2 つ目がオレンジ。指先の点はほかの関節より一回り大きい。`wire` では骨格がネオンに置き換わります。
+- 骨格は、1 つ目の手が金色、2 つ目がオレンジ。指先の点はほかの関節より一回り大きい。
 - 映像はデフォルトで**左右反転**（鏡を見ているのと同じで、左右の感覚が合う）。`--no-mirror` で切れます。
 
 ---
 
-## 3. 5 つのスタイルの遊び方
+## 3. 3 つのスタイルの遊び方
 
-`S` キーで `mirror → screen → cube → banner → wire` の順に回ります。`--style` で直接指定も可。
+`S` キーで `mirror → screen → cube` の順に回ります。`--style` で直接指定も可。
 
 まず全スタイル共通の、手の映し方のコツから。
 
@@ -207,14 +207,6 @@ HUD は OpenCV の Hershey フォントで描いていて、**ASCII しか出せ
 - **片手を返す**と、その半分が暗くなって冷たいグレーに寄り、サンプリング点が外へずれます。紙が折れた感じ。
 - 両手をずらして上辺と下辺が交差すると、紙が 2 枚の三角形の翼にねじれ、右の翼が手前に。
 - **両手ともつまみ切る**（つまみ距離 < 16 px）と、紙が真横を向いて、隙間を挟んだ白い線 2 本だけになります。
-
-### 3.4 banner TouchDesigner 風バナー
-
-`mirror` と同じ四隅（上辺が人差し指先、下辺が親指先）ですが、中身は 4 本の帯。黄色のしきい値ヘッドバンド / 淡い X 線風の中央窓（左右 7 % 内側、黄色のサイドライン付き）/ 白いソフトしきい値の区切り線 / 画面の外まではみ出す赤いフットバンド。全部カメラ映像の画面空間 2 色化で、外枠の線はありません。
-
-### 3.5 wire ネオンのワイヤー骨格
-
-ジェスチャー不要。手を画面に入れるだけで、グロー + 芯線 + 骨に沿って流れる光点。一番軽いスタイルで、箱の幾何にも背景のサンプリングにも触りません。カクつくときは、これで検出自体が安定しているかを見ると切り分けが早い。
 
 ---
 
@@ -285,7 +277,7 @@ HUD は OpenCV の Hershey フォントで描いていて、**ASCII しか出せ
 
 | オプション | デフォルト | 意味 |
 |---|---|---|
-| `--style` | `cube` | `mirror` / `screen` / `cube` / `banner` / `wire`。旧名 `fabric`→mirror、`track`→screen、`outline`→wire も可 |
+| `--style` | `cube` | `mirror` / `screen` / `cube`。旧名 `fabric`→mirror、`track`→screen も可 |
 | `--camera` | `-1` | カメラ番号。−1 = 内蔵を自動選択（iPhone 連係カメラを避ける） |
 | `--width` `--height` | 1920 × 1080 | 要求するキャプチャ解像度。デバイスが別のサイズを返してきたらこのサイズにリサイズして、エフェクトの座標系を揃える |
 | `--fps` | 0（=30） | **要求**フレームレート。60 はカメラ側の対応が必要。検出は中央値 6.9 ms なので 60 Hz でも追いつく |
@@ -346,7 +338,7 @@ After Effects / TouchDesigner / 自作スクリプト向け。
 | ガラスの箱の幾何とフィルタ | `src/manual_tracking/glassbox.py` | 箱が平たい → `BOX_H_GAIN`。奥行き → `BOX_DEPTH_RATIO`。色がちらつく → `BOX_ROLL_MAX_RATE`（先に `docs/GLASS_BOX_GEOMETRY.md` §3.7 を読むこと。勘で触らない） |
 | 6 面それぞれのピクセル処理 | `src/manual_tracking/effects.py` | 色 → `RISO_DARK` / `DUOTONE_*` / `PC_TINT`…。どの面にどの処理か → `BOX_FACES` の 6 行 |
 | ガラスの透け具合 / 稜線 / 照明 | `src/manual_tracking/renderer.py` | `BOX_FACE_ALPHA`、`BOX_BACK_ALPHA`、`BOX_EDGE_W`、`_LIGHT`、`SHADE_MIN` |
-| 折り紙ミラー / バナー / ネオン | `sheet.py` / `banner.py` / `neon.py` | 紙の明るさの振れ幅 `B_SWING`。帯の比率は `band(...)` の数値。グローの半径 `GLOW_BLUR` |
+| 折り紙ミラー | `sheet.py` | 紙の明るさの振れ幅 `B_SWING`、折れた面のサンプリングずれ `MIRROR_SHIFT`、つまみ切りのしきい値 `PINCH_SHUT_PX` |
 | 手のフィルタ | `src/manual_tracking/tracker.py` | 震える → `OE_MIN_CUTOFF` を 0.6 に。遅れる → 1.5 に |
 | 検出遅延の補償 | `src/manual_tracking/detect_service.py` | `EXTRAP_CAP_MS` / `EXTRAP_DAMP` / `EXTRAP_MAX_PX` |
 | リアルタイムのキー | `src/manual_tracking/live.py` | `_KNOBS`（±ステップのつまみ）と `_ACTIONS`（それ以外）の 2 表。キーが重複すると起動時に落ちる |
@@ -373,7 +365,7 @@ After Effects / TouchDesigner / 自作スクリプト向け。
                         ├─renderer.render(frame, hands)
                         │    ├─ cube:   floatcube.update → project → 6 面を塗る
                         │    ├─ screen: glassbox.solve → 6 面を塗る
-                        │    ├─ mirror / banner / wire: sheet / banner / neon
+                        │    ├─ mirror: sheet
                         │    └─ 骨格
                         ├─recorder.write(out)      ← HUD を描く前に録画
                         └─HUD → imshow → waitKey → キー表で振り分け
@@ -395,7 +387,7 @@ After Effects / TouchDesigner / 自作スクリプト向け。
 ```
 paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom ──▶ glassbox / floatcube
                                                      │                │
-                                     effects ──▶ paint ──▶ sheet / banner / neon ──▶ renderer ──▶ detect_service ──▶ live ──▶ __main__
+                                     effects ──▶ paint ──▶ sheet ──▶ renderer ──▶ detect_service ──▶ live ──▶ __main__
 ```
 
 | モジュール | やることは一つ |
@@ -407,7 +399,7 @@ paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom
 | `floatcube.py` | 姿勢を持つキューブ。つかみ判定、ドラッグ / 両手 / 慣性 / 重力 / 分解の状態機械。キャンバスには触らない |
 | `effects.py` | 6 種類のピクセル処理（`src → out` の純関数。パラメータは生成時にルックアップテーブルへ焼き込む）。「手」のことは一切知らない |
 | `paint.py` | 多角形を「何かの処理を通した背景」で塗る（bbox 局所ウィンドウ + マスク + アルファ + 陰影）。手も箱も知らない |
-| `sheet / banner / neon.py` | 箱を持たない 3 スタイル |
+| `sheet.py` | 折り紙ミラー（箱を持たない唯一のスタイル） |
 | `renderer.py` | スタイル別の振り分け。`screen`/`cube` の面の並べ替え（3D 外向き法線による可視判定 + 遠い順 + Lambert 照明）。背景キャッシュ。左右役割のヒステリシス |
 | `detect_service.py` | 検出スレッド + 外挿 |
 | `live.py` | カメラ、録画、HUD、キー、メインループ |
@@ -420,8 +412,6 @@ paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom
 | スタイル | 描画 平均 | p95 |
 |---|---|---|
 | mirror | 0.66 ms | 0.88 |
-| banner | 0.85 | 1.20 |
-| wire | 2.40 | 2.77 |
 | cube | 3.55 | 5.21 |
 | screen | 4.05 | 6.49 |
 
@@ -434,7 +424,7 @@ paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom
 ```bash
 .venv/bin/pip install -r requirements-dev.txt                # ruff + pytest
 .venv/bin/ruff check main.py src tools tests                 # 1. 静的チェック（isort 込み）
-.venv/bin/pytest                                             # 2. テスト: 163 件、1 秒未満、カメラ / 素材 / モデル不要
+.venv/bin/pytest                                             # 2. テスト: 158 件、1 秒未満、カメラ / 素材 / モデル不要
 PYTHONPATH=src .venv/bin/python tools/cube_check.py          # 3. cube 操作感のボトムライン: 27 アサーション、合成の手
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py           # 4. screen の回帰: サンプル動画 + モデルが必要、約 1 分
 ```

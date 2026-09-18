@@ -132,7 +132,7 @@ Webcam
 4. 颜色用橙金：`rgb(1.0, 0.55, 0.1)` 一类  
 
 本仓库早期的 `fabric` 风格（橙金空间布）已退役，`--style fabric` 现在只是 `mirror`（折纸镜面）的别名。
-不装 TD 想预览「双手之间撑一张面」这个思路，用 `./run.sh live --style mirror`；只要骨架和指尖用 `--style wire`。
+不装 TD 想预览「双手之间撑一张面」这个思路，用 `./run.sh live --style mirror`。
 
 ---
 

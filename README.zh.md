@@ -2,9 +2,9 @@
 
 # manual-tracking
 
-实时手部特效（纯 Python）：MediaPipe 手部追踪 + OpenCV，把**折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TouchDesigner 横幅 / 霓虹骨架**五种效果贴在你自己的手上。一台 Mac、一个内置摄像头、不要 GPU，1080p 全程 30 fps。
+实时手部特效（纯 Python）：MediaPipe 手部追踪 + OpenCV，把**折纸镜面 / 彩色玻璃盒 / 悬浮立方体**三种效果贴在你自己的手上。一台 Mac、一个内置摄像头、不要 GPU，1080p 全程 30 fps。
 
-![五种风格](docs/img/styles.jpg)
+![三种风格](docs/img/styles.jpg)
 
 （合成手 + 程序生成背景的示意图；实机效果贴在你自己的手上，比这好看。）
 
@@ -23,9 +23,9 @@ cd manual-tracking
 
 **完整教程**（安装、每种手势怎么做、调参、录制、离线渲染、排障、架构）→ [`docs/TUTORIAL.md`](docs/TUTORIAL.md)
 
-## 五种风格
+## 三种风格
 
-`S` 键按这个顺序循环，`--style` 直接指定。旧名（`fabric`/`frame`/`planes`/`fluid` → mirror，`track` → screen，`outline` → wire）仍可用。
+`S` 键按这个顺序循环，`--style` 直接指定。旧名（`fabric`/`frame`/`planes`/`fluid` → mirror，`track` → screen）仍可用。
 
 - **`mirror` 折纸镜面**——角钉在双手拇指尖+食指尖；平摊是一张反相镜面的纸（`clamp(283−0.56×背景)`），翻一只手那半张变暗折起，两手错位拧成麻花，两手捏死压成双瓣细线。
 - **`screen` 彩色玻璃盒**——双手撑起一个**参数化刚体长方体**：手不钉顶点，只给几个低噪参数（每手 掌心↔指弧中点插值 = 锚点 → 长轴与盒长；指弧展开量 → 盒高；掌宽比 → 长轴深度分量；掌面朝向 → 绕长轴 roll），长方体在 3D 里造好再弱透视投影——刚性和两点透视是构造出来的。面可见性用 3D 外法线 + Lambert 光照。**双手靠拢 → 压扁收起，拉开 → 长出重现**。六个面六种像素处理：
@@ -52,14 +52,11 @@ cd manual-tracking
 
   转动用的是**拖动增量**而不是手掌朝向，所以往一个方向一直拖能无限翻下去，不会像 `screen` 那样翻到某个角度自己转回来（`screen` 受制于掌面朝向的 cos 型饱和，见 `docs/GLASS_BOX_GEOMETRY.md` §6）。手感有自动断言：`tools/cube_check.py`。
 
-- **`banner` TouchDesigner 横幅**——黄阈值头带 / X-ray 中窗 / 白分隔线 / 悬出红脚带，全部是摄像头画面的屏幕空间双色调。
-- **`wire` 霓虹电流骨架**——辉光 + 芯线 + 沿骨骼流动的光点。不需要手势，最便宜的风格。
-
 ## 键位
 
 | 键 | 作用 |
 |---|---|
-| `S` | mirror / screen / cube / banner / wire |
+| `S` | mirror / screen / cube |
 | `D` | 实拍底 / 黑底 |
 | `o` `p` | 实拍底亮度（暗 / 亮） |
 | `R` | 录制（按实测帧率、不含 HUD）→ `output/live_*.mp4` |
@@ -120,7 +117,7 @@ python main.py live --style mirror         # IDE 友好入口，参数同上
 | 每个面的像素处理（riso / 硬阈值 / 点云 / 四叉树 / 网点 / 蓝顶 glitch） | `effects.py` |
 | `screen` 的盒子几何与滤波 | `glassbox.py` |
 | `cube` 的手感（增益、惯性、重力、炸开、抓取判据） | `floatcube.py` |
-| `mirror` / `banner` / `wire` 三种风格 | `sheet.py` / `banner.py` / `neon.py` |
+| `mirror` 折纸镜面 | `sheet.py` |
 | 长方体的顶点序与弱透视投影（`screen` 与 `cube` 共用的**唯一**一份） | `boxgeom.py` |
 | 多边形填充、描边这些绘制原语 | `paint.py` |
 | 手部滤波（One Euro、轨迹、handedness 锁存） | `tracker.py` |
@@ -134,7 +131,7 @@ python main.py live --style mirror         # IDE 友好入口，参数同上
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check main.py src tools tests                # 静态检查（配置在 pyproject.toml）
-.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，163 条，<1 秒
+.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，158 条，<1 秒
 PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，27 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言（需样片，见下）
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数

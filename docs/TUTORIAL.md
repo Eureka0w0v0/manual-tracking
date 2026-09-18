@@ -7,7 +7,7 @@
 - [0. 你需要什么](#0-你需要什么)
 - [1. 安装与第一次运行](#1-安装与第一次运行)
 - [2. 屏幕上那些东西是什么](#2-屏幕上那些东西是什么)
-- [3. 五种风格怎么玩](#3-五种风格怎么玩)
+- [3. 三种风格怎么玩](#3-三种风格怎么玩)
 - [4. 实时调参](#4-实时调参)
 - [5. 录制](#5-录制)
 - [6. 命令行完整参考](#6-命令行完整参考)
@@ -90,7 +90,7 @@ PYTHONPATH=src .venv/bin/python -m manual_tracking live --style cube
 
 ```
 ========================================================
-  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅
+  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体
   拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线
   采集 1920x1080 (req 1920x1080)  帧率 30 (req 30)  推理边 全帧
   窗口 1920x1080 (可拖拽边角缩放)
@@ -133,14 +133,14 @@ HUD 用的是 OpenCV 的 Hershey 字体，**只认 ASCII**，所以这里都是�
 ### 2.3 画面
 
 - 实拍底默认压到 55% 亮度（`D` 切黑底，`o`/`p` 调亮度），特效是主角。
-- 骨架：金色是第一只手、橙色是第二只，指尖的点比别的关节大一圈。`wire` 风格的骨架换成霓虹。
+- 骨架：金色是第一只手、橙色是第二只，指尖的点比别的关节大一圈。
 - 画面默认**镜像**（像照镜子，左右手方向和直觉一致）。`--no-mirror` 关掉。
 
 ---
 
-## 3. 五种风格怎么玩
+## 3. 三种风格怎么玩
 
-`S` 键按 `mirror → screen → cube → banner → wire` 循环。`--style` 直接指定。
+`S` 键按 `mirror → screen → cube` 循环。`--style` 直接指定。
 
 先说通用的手势质量：
 
@@ -208,14 +208,6 @@ HUD 用的是 OpenCV 的 Hershey 字体，**只认 ASCII**，所以这里都是�
 - **翻一只手**：那半张纸变暗、变冷灰、采样点外移——像纸折起来了。
 - 两手错位到顶边和底边交叉：纸拧成麻花，两个三角翼，右翼压在前面。
 - **两手都捏死**（捏距 < 16 px）：纸转到侧面，只剩两条白线夹一道缝。
-
-### 3.4 banner — TouchDesigner 横幅
-
-和 `mirror` 同一套四角（食指尖上边、拇指尖下边），但内容是四层条带：黄阈值头带 / 苍白 X-ray 中窗（左右内缩 7%，带黄侧线） / 白软阈值分隔线 / 悬出画外的红脚带。全部是摄像头画面的屏幕空间双色调变换，没有整板描边。
-
-### 3.5 wire — 霓虹电流骨架
-
-不需要手势，手放进画面就行：辉光 + 芯线 + 沿骨骼流动的光点。最便宜的风格，不碰盒子几何、不采样背景，卡的时候用它看检测本身稳不稳。
 
 ---
 
@@ -286,7 +278,7 @@ HUD 用的是 OpenCV 的 Hershey 字体，**只认 ASCII**，所以这里都是�
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--style` | `cube` | `mirror` / `screen` / `cube` / `banner` / `wire`，旧名 `fabric`→mirror、`track`→screen、`outline`→wire 仍可用 |
+| `--style` | `cube` | `mirror` / `screen` / `cube`，旧名 `fabric`→mirror、`track`→screen 仍可用 |
 | `--camera` | `-1` | 摄像头索引；-1 = 自动挑本机内置（绕开 iPhone 连续互通） |
 | `--width` `--height` | 1920 × 1080 | 请求的采集分辨率。设备给了别的尺寸会被缩放到这个尺寸，特效坐标系保持一致 |
 | `--fps` | 0（=30） | **请求**帧率。60 需要摄像头支持；检测中位 6.9 ms，60 Hz 喂得饱 |
@@ -347,7 +339,7 @@ HUD 用的是 OpenCV 的 Hershey 字体，**只认 ASCII**，所以这里都是�
 | 玻璃盒几何与滤波 | `src/manual_tracking/glassbox.py` | 盒子太扁 → `BOX_H_GAIN`；进深 → `BOX_DEPTH_RATIO`；颜色频闪 → `BOX_ROLL_MAX_RATE`（先看 `docs/GLASS_BOX_GEOMETRY.md` §3.7，别瞎调） |
 | 六个面各自的像素处理 | `src/manual_tracking/effects.py` | 换颜色 → `RISO_DARK` / `DUOTONE_*` / `PC_TINT`…；换某个面用哪种处理 → `BOX_FACES` 那六行 |
 | 玻璃通透度 / 棱线 / 光照 | `src/manual_tracking/renderer.py` | `BOX_FACE_ALPHA`、`BOX_BACK_ALPHA`、`BOX_EDGE_W`、`_LIGHT`、`SHADE_MIN` |
-| 折纸镜面 / 横幅 / 霓虹 | `sheet.py` / `banner.py` / `neon.py` | 纸的亮度摆幅 `B_SWING`；横幅条带比例 `band(...)` 那几个数；辉光半径 `GLOW_BLUR` |
+| 折纸镜面 | `sheet.py` | 纸的亮度摆幅 `B_SWING`、折起面采样偏移 `MIRROR_SHIFT`、捏死阈值 `PINCH_SHUT_PX` |
 | 手部滤波 | `src/manual_tracking/tracker.py` | 嫌抖 → `OE_MIN_CUTOFF` 降到 0.6；嫌拖影 → 升到 1.5 |
 | 检测延迟补偿 | `src/manual_tracking/detect_service.py` | `EXTRAP_CAP_MS` / `EXTRAP_DAMP` / `EXTRAP_MAX_PX` |
 | 实时键位 | `src/manual_tracking/live.py` | `_KNOBS`（±步进的旋钮）和 `_ACTIONS`（其它键）两张表；撞键在启动时当场炸 |
@@ -374,7 +366,7 @@ HUD 用的是 OpenCV 的 Hershey 字体，**只认 ASCII**，所以这里都是�
                         ├─renderer.render(frame, hands)
                         │    ├─ cube:   floatcube.update → project → 六个面 fill
                         │    ├─ screen: glassbox.solve → 六个面 fill
-                        │    ├─ mirror / banner / wire: sheet / banner / neon
+                        │    ├─ mirror: sheet
                         │    └─ 骨架
                         ├─recorder.write(out)      ← 录制在画 HUD 之前
                         └─HUD → imshow → waitKey → 键位表分派
@@ -396,7 +388,7 @@ HUD 用的是 OpenCV 的 Hershey 字体，**只认 ASCII**，所以这里都是�
 ```
 paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom ──▶ glassbox / floatcube
                                                      │                │
-                                     effects ──▶ paint ──▶ sheet / banner / neon ──▶ renderer ──▶ detect_service ──▶ live ──▶ __main__
+                                     effects ──▶ paint ──▶ sheet ──▶ renderer ──▶ detect_service ──▶ live ──▶ __main__
 ```
 
 | 模块 | 只做一件事 |
@@ -408,7 +400,7 @@ paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom
 | `floatcube.py` | 有位姿的立方体：抓取判定、拖动/双手/惯性/重力/炸开的状态机。不碰画布 |
 | `effects.py` | 六种像素处理（`src → out` 的纯函数，参数在构造期烘进查表）。完全不知道「手」 |
 | `paint.py` | 把多边形填成「被某种处理过的背景」（bbox 局部窗口 + 掩码 + alpha + 光照）。不知道手和盒子 |
-| `sheet / banner / neon.py` | 三种不带盒子的风格 |
+| `sheet.py` | 折纸镜面（不带盒子的那一种） |
 | `renderer.py` | 按 style 分派；`screen`/`cube` 的面排序（3D 外法线可见性 + 由远及近 + Lambert 光照）；底图缓存；左右手角色滞回 |
 | `detect_service.py` | 检测线程 + 外推 |
 | `live.py` | 摄像头、录制、HUD、键位、主循环 |
@@ -421,8 +413,6 @@ paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom
 | 风格 | 绘制 mean | p95 |
 |---|---|---|
 | mirror | 0.66 ms | 0.88 |
-| banner | 0.85 | 1.20 |
-| wire | 2.40 | 2.77 |
 | cube | 3.55 | 5.21 |
 | screen | 4.05 | 6.49 |
 
@@ -435,7 +425,7 @@ paths ──▶ landmarks ──▶ tracker ──▶ handgeom ──▶ boxgeom
 ```bash
 .venv/bin/pip install -r requirements-dev.txt                # ruff + pytest
 .venv/bin/ruff check main.py src tools tests                 # 1. 静态检查（含 isort）
-.venv/bin/pytest                                             # 2. 契约：163 条，<1 秒，不碰摄像头/素材/模型
+.venv/bin/pytest                                             # 2. 契约：158 条，<1 秒，不碰摄像头/素材/模型
 PYTHONPATH=src .venv/bin/python tools/cube_check.py          # 3. cube 手感底线：27 条断言，合成手
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py           # 4. screen 回归：需要样片 + 模型，约 1 分钟
 ```

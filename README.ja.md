@@ -2,9 +2,9 @@
 
 # manual-tracking
 
-Python だけで動くリアルタイムの手のエフェクトです。MediaPipe の手トラッキングと OpenCV で、**折り紙ミラー・ガラスの箱・浮遊キューブ・TouchDesigner 風バナー・ネオンのワイヤー骨格**の 5 種類を自分の手に貼り付けます。Mac 一台と内蔵カメラだけ、GPU は不要。1080p で 30 fps を切りません。
+Python だけで動くリアルタイムの手のエフェクトです。MediaPipe の手トラッキングと OpenCV で、**折り紙ミラー・ガラスの箱・浮遊キューブ**の 3 種類を自分の手に貼り付けます。Mac 一台と内蔵カメラだけ、GPU は不要。1080p で 30 fps を切りません。
 
-![5 つのスタイル](docs/img/styles.jpg)
+![3 つのスタイル](docs/img/styles.jpg)
 
 （合成した手と生成した背景で描いたイメージ図です。実機だと自分の手にエフェクトが乗るので、これよりだいぶ見栄えがします。）
 
@@ -25,9 +25,9 @@ macOS がカメラの許可を聞いてくるので「OK」を押します。あ
 
 コード内のコメントと詳細ドキュメント 2 本（`docs/GLASS_BOX_GEOMETRY.md`、`docs/TOUCHDESIGNER_SETUP.md`）は中国語です。それぞれ冒頭に日本語の要約を付けてあります。
 
-## 5 つのスタイル
+## 3 つのスタイル
 
-`S` キーでこの順に切り替わります。`--style` で直接指定も可能。旧名（`fabric`/`frame`/`planes`/`fluid` → mirror、`track` → screen、`outline` → wire）もそのまま使えます。
+`S` キーでこの順に切り替わります。`--style` で直接指定も可能。旧名（`fabric`/`frame`/`planes`/`fluid` → mirror、`track` → screen）もそのまま使えます。
 
 - **`mirror` 折り紙ミラー**。両手の親指と人差し指の先に四隅を固定した一枚の紙。平らに持てば反転ミラー（`clamp(283 − 0.56 × 背景)`）、片手を返すとその半分が暗くなって折れ、両手をずらすとねじれ、両手ともつまみ切ると細い二重線になります。
 - **`screen` ガラスの箱**。両手で支える**パラメトリックな剛体の直方体**です。手は頂点を固定せず、ノイズの少ないパラメータを数個渡すだけ（手ごとに、手のひら中心と指先の弧の中点の間を補間したアンカー → 長軸と長さ、指先の広がり → 高さ、両手の手のひら幅の比 → 長軸の奥行き成分、手のひらの向き → 長軸まわりの回転）。直方体は 3D で組み立ててから弱透視投影するので、剛性と二点透視は「後から補正」ではなく「構造として」出ます。面の可視判定は 3D の外向き法線と Lambert 照明。**両手を近づけると箱がつぶれて消え、離すとまた伸びてきます。** 6 面それぞれ違うピクセル処理：
@@ -54,14 +54,11 @@ macOS がカメラの許可を聞いてくるので「OK」を押します。あ
 
   回転は手のひらの向きではなく**ドラッグの差分**で駆動しているので、同じ方向に引き続ければ無限に回ります。`screen` のように途中で戻ってくることはありません（`screen` は手のひら向き信号の cos 型飽和に縛られています。`docs/GLASS_BOX_GEOMETRY.md` §6）。操作感は `tools/cube_check.py` の自動アサーションで固定しています。
 
-- **`banner` TouchDesigner 風バナー**。黄色のしきい値ヘッドバンド / X 線風の中央窓 / 白い区切り線 / 親指の下にはみ出す赤いフットバンド。全部カメラ映像の画面空間 2 色化です。
-- **`wire` ネオンのワイヤー骨格**。グロー + 芯線 + 骨に沿って流れる光点。ジェスチャー不要、一番軽いスタイル。
-
 ## キー操作
 
 | キー | 動作 |
 |---|---|
-| `S` | mirror / screen / cube / banner / wire |
+| `S` | mirror / screen / cube |
 | `D` | カメラ背景 / 黒背景 |
 | `o` `p` | 背景の明るさ（暗く / 明るく） |
 | `R` | 録画（実測フレームレート、HUD なし）→ `output/live_*.mp4` |
@@ -121,7 +118,7 @@ python main.py live --style mirror         # IDE 向けの入口、引数は同�
 | 各面のピクセル処理（リソ / 2 色 / 点群 / 四分木 / ハーフトーン / 上面グリッチ） | `effects.py` |
 | `screen` の箱の幾何とフィルタ | `glassbox.py` |
 | `cube` の操作感（ゲイン、慣性、重力、分解、つかみ判定） | `floatcube.py` |
-| `mirror` / `banner` / `wire` の 3 スタイル | `sheet.py` / `banner.py` / `neon.py` |
+| `mirror` 折り紙ミラー | `sheet.py` |
 | 直方体の頂点順と弱透視投影（`screen` と `cube` が共有する**唯一**のコピー） | `boxgeom.py` |
 | 多角形の塗りと線の描画プリミティブ | `paint.py` |
 | 手のフィルタ（One Euro、トラック、利き手のラッチ） | `tracker.py` |
@@ -135,7 +132,7 @@ python main.py live --style mirror         # IDE 向けの入口、引数は同�
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check main.py src tools tests                # 静的チェック（設定は pyproject.toml）
-.venv/bin/pytest                                           # 純ロジックのテスト + 描画スモーク、163 件、1 秒未満
+.venv/bin/pytest                                           # 純ロジックのテスト + 描画スモーク、158 件、1 秒未満
 PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 操作感のボトムライン、27 アサーション
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 操作感のボトムライン、3 アサーション（サンプル動画が必要、下記）
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # expo/cap をスイープしてパラメータ探し

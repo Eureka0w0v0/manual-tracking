@@ -2,9 +2,9 @@
 
 # manual-tracking
 
-Real-time hand effects in pure Python: MediaPipe Hand Landmarker + OpenCV, pinning five effects to your own hands — an **origami mirror sheet, a glass box, a floating cube, a TouchDesigner-style banner and a neon wire skeleton**. One Mac, one built-in webcam, no GPU; 1080p at a steady 30 fps.
+Real-time hand effects in pure Python: MediaPipe Hand Landmarker + OpenCV, pinning three effects to your own hands — an **origami mirror sheet, a glass box and a floating cube**. One Mac, one built-in webcam, no GPU; 1080p at a steady 30 fps.
 
-![Five styles](docs/img/styles.jpg)
+![Three styles](docs/img/styles.jpg)
 
 (Illustration rendered with synthetic hands on a generated background. On a real camera the effects sit on your own hands and look a lot better than this.)
 
@@ -25,9 +25,9 @@ Requirements: macOS (tested) + Python 3.12–3.14. Linux / Windows are untested;
 
 Code comments and the two deep-dive docs (`docs/GLASS_BOX_GEOMETRY.md`, `docs/TOUCHDESIGNER_SETUP.md`) are in Chinese; each has a short English summary at the top.
 
-## The five styles
+## The three styles
 
-`S` cycles through them in this order; `--style` picks one directly. Legacy names (`fabric`/`frame`/`planes`/`fluid` → mirror, `track` → screen, `outline` → wire) still work.
+`S` cycles through them in this order; `--style` picks one directly. Legacy names (`fabric`/`frame`/`planes`/`fluid` → mirror, `track` → screen) still work.
 
 - **`mirror` — origami mirror sheet.** Corners pinned to both thumbs and index fingertips. Flat, it is an inverted-mirror sheet (`clamp(283 − 0.56 × background)`); flip one hand and that half darkens and folds; cross the hands and it twists; pinch both hands shut and it collapses to a thin double line.
 - **`screen` — glass box.** Two hands hold up a **parametric rigid cuboid**: the hands do not pin vertices, they only supply a few low-noise parameters (per hand: an anchor interpolated between palm centre and finger-arc midpoint → box axis and length; finger-arc spread → height; palm-width ratio → the axis's depth component; palm orientation → roll about the axis). The cuboid is built in 3D and projected with weak perspective, so rigidity and two-point perspective are constructed rather than corrected. Face visibility uses 3D outward normals + Lambert shading. **Bring the hands together → the box flattens away; pull apart → it grows back.** Six faces, six pixel treatments:
@@ -54,14 +54,11 @@ Code comments and the two deep-dive docs (`docs/GLASS_BOX_GEOMETRY.md`, `docs/TO
 
   Rotation is driven by **drag deltas**, not palm orientation, so dragging in one direction keeps turning forever instead of turning back the way `screen` does (`screen` is bound by the cosine-shaped saturation of the palm-orientation signal, see `docs/GLASS_BOX_GEOMETRY.md` §6). The feel is pinned by automated assertions: `tools/cube_check.py`.
 
-- **`banner` — TouchDesigner-style banner.** Yellow-threshold head band / X-ray middle window / white separator / a red foot band hanging below the thumbs. All of it is a screen-space duotone of the camera image.
-- **`wire` — neon wire skeleton.** Glow + core line + light dots flowing along the bones. No gesture needed; the cheapest style.
-
 ## Keys
 
 | Key | Action |
 |---|---|
-| `S` | mirror / screen / cube / banner / wire |
+| `S` | mirror / screen / cube |
 | `D` | camera background / black background |
 | `o` `p` | background brightness (darker / brighter) |
 | `R` | record (at the measured frame rate, without the HUD) → `output/live_*.mp4` |
@@ -121,7 +118,7 @@ Every tunable lives at the top of the module that owns it, each with a one-line 
 | the per-face pixel treatments (riso / duotone / point cloud / quadtree / halftone / blue-top glitch) | `effects.py` |
 | geometry and filtering of the `screen` box | `glassbox.py` |
 | how `cube` feels (gains, inertia, gravity, explode, grab test) | `floatcube.py` |
-| the `mirror` / `banner` / `wire` styles | `sheet.py` / `banner.py` / `neon.py` |
+| the `mirror` sheet | `sheet.py` |
 | cuboid vertex order and weak-perspective projection (the **single** copy shared by `screen` and `cube`) | `boxgeom.py` |
 | polygon fill and stroke primitives | `paint.py` |
 | hand filtering (One Euro, tracks, handedness latch) | `tracker.py` |
@@ -135,7 +132,7 @@ Every tunable lives at the top of the module that owns it, each with a one-line 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check main.py src tools tests                # static checks (configured in pyproject.toml)
-.venv/bin/pytest                                           # pure-logic contracts + render smoke, 163 tests, <1 s
+.venv/bin/pytest                                           # pure-logic contracts + render smoke, 158 tests, <1 s
 PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube feel baseline, 27 assertions
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen feel baseline, 3 assertions (needs a sample clip, see below)
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # sweep expo/cap to pick parameters
