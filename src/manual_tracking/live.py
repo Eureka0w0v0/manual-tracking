@@ -219,8 +219,8 @@ def _draw_hud(
 # 分支体里各写一遍(`0.1 if key == ord("]") else -0.1`)。
 #
 # 代价已经兑现过: glassbox.py 的 gap_shut 注释一度写着 "live ( )", 真实绑定却是
-# "< >" —— 键位说明散在窗口标题 / 开机横幅 / 分支体三处, 各改各的。现在横幅里
-# 旋钮那半由 _KNOBS 生成, 这类漂移在结构上不再可能。
+# "< >" —— 键位说明散在窗口标题 / 开机横幅 / 分支体三处, 各改各的。现在横幅由
+# _ACTIONS 与 _KNOBS 两张表生成(_banner_lines), 这类漂移在结构上不再可能。
 #
 # 撞键: 平铺 if 时代是**静默双触发**(一次按键跑两条分支), 现在建表时当场抛。
 
@@ -280,6 +280,11 @@ class _Knob:
     fmt: str = "{:.2f}"
     styles: tuple[str, ...] = ()
 
+    @property
+    def keys(self) -> str:
+        """这个旋钮占的全部字符 —— 建键表 / 查撞键时与 _Action 同一个接口."""
+        return self.dec + self.inc
+
     def apply(self, t: "_Tick", ch: str) -> None:
         if _off_style(t, ch, self.styles):
             return
@@ -308,16 +313,6 @@ _KNOBS: tuple[_Knob, ...] = (
     _Knob("7", "8", "box", "roll_max_rate", 5.0, 5.0, 90.0, "7 8 角速度上限",
           "roll_max_rate", "°/帧", "{:.0f}", styles=_SCREEN),
 )
-
-
-def _knob_hints(styles: tuple[str, ...]) -> str:
-    """开机横幅里属于某一档风格的那行旋钮说明 —— 横幅由 _KNOBS 生成, 不手抄.
-
-    手抄过, 漂过: glassbox 的注释一度写着 "live ( )" 而实际绑的是 "< >"。
-    **按风格分行**是为了和 _off_style 的运行时提示对得上 —— 横幅说这个键属于
-    哪个风格, 按下去时就该得到同一个说法。
-    """
-    return "  ".join(k.hint for k in _KNOBS if k.styles == styles)
 
 
 def _act_quit(t: _Tick, ch: str) -> None:
@@ -391,45 +386,77 @@ def _act_record(t: _Tick, ch: str) -> None:
     t.rec.toggle(t.out, t.fps_ema, t.warm)
 
 
-def _only(styles: tuple[str, ...], fn: _Handler) -> _Handler:
-    """把 handler 限在几个风格里 —— 与 _Knob.styles 同一条规则、同一句提示."""
-
-    def guarded(t: _Tick, ch: str) -> None:
-        if not _off_style(t, ch, styles):
-            fn(t, ch)
-
-    return guarded
-
-
 _BOXY = ("screen", "cube")  # 两种有盒子的风格共用: 通透度 / 棱线 / 旋转跟手
 _CUBE = ("cube",)
 
-# 形状各异、进不了 _KNOBS 的键(理由写在各自的 docstring 里)
-_ACTIONS: dict[str, _Handler] = {
-    "q": _act_quit,
-    "\x1b": _act_quit,  # Esc
-    "s": _act_style,
-    "d": _act_bg,
-    "g": _only(_BOXY, _act_alpha),
-    "h": _only(_BOXY, _act_alpha),
-    "{": _only(_BOXY, _act_edge),
-    "}": _only(_BOXY, _act_edge),
-    "9": _only(_BOXY, _act_spin),
-    "0": _only(_BOXY, _act_spin),
-    "f": _only(_CUBE, _act_gravity),
-    "x": _only(_CUBE, _act_cube_reset),
-    "r": _act_record,
-}
+
+@dataclass(frozen=True)
+class _Action:
+    """形状各异、进不了 _KNOBS 的键: 一个或几个字符 → 同一个 handler.
+
+    keys 里多个字符共用一个 handler(g/h、{/}、9/0 各是一对, q 与 Esc 是同义键),
+    方向由 handler 自己看 ch 决定。hint 进开机横幅, styles 与 _Knob.styles 同一条
+    规则、同一句提示(_off_style)。原先靠 _only() 包一层, 而横幅上这几个键的那两
+    行是手抄的 —— _KNOBS 那半生成、这半手抄, 会漂的只剩这半。
+    """
+
+    keys: str
+    fn: _Handler
+    hint: str  # 开机横幅由它生成
+    styles: tuple[str, ...] = ()
+
+    def apply(self, t: "_Tick", ch: str) -> None:
+        if not _off_style(t, ch, self.styles):
+            self.fn(t, ch)
+
+
+# 理由写在各自 handler 的 docstring 里。这里的顺序就是横幅里的顺序。
+_ACTIONS: tuple[_Action, ...] = (
+    _Action("q\x1b", _act_quit, "Q退出"),  # Esc 同义
+    _Action("s", _act_style, "S风格"),
+    _Action("d", _act_bg, "D暗底"),
+    _Action("r", _act_record, "R录制"),
+    _Action("90", _act_spin, "9 0 旋转跟手", _BOXY),
+    _Action("gh", _act_alpha, "g h 通透", _BOXY),
+    _Action("{}", _act_edge, "{ } 棱线", _BOXY),
+    _Action("f", _act_gravity, "F 重力开关", _CUBE),
+    _Action("x", _act_cube_reset, "X 归位", _CUBE),
+)
+
+
+def _hints(styles: tuple[str, ...]) -> str:
+    """开机横幅里属于某一档风格的那行键位说明 —— 两张表一起生成, 不手抄.
+
+    手抄过, 漂过: glassbox 的注释一度写着 "live ( )" 而实际绑的是 "< >"。
+    **按风格分行**是为了和 _off_style 的运行时提示对得上 —— 横幅说这个键属于
+    哪个风格, 按下去时就该得到同一个说法。
+    """
+    return "  ".join(e.hint for e in (*_ACTIONS, *_KNOBS) if e.styles == styles)
+
+
+# 横幅的骨架: (行首标签, 这一行装哪一档风格的键)。键位表里出现了不在这里的
+# styles 组合, test_live 会报 —— 那个键存在、能用、但没人知道。
+_BANNER_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("", ()),
+    ("screen 调参: ", _SCREEN),
+    ("screen/cube: ", _BOXY),
+    ("cube  键位: ", _CUBE),
+)
+
+
+def _banner_lines() -> list[str]:
+    """开机横幅的键位部分, 每档风格一行."""
+    return [label + _hints(styles) for label, styles in _BANNER_GROUPS]
 
 
 def _build_keymap() -> dict[str, _Handler]:
     """键 → handler. 撞键在这里当场炸 —— 平铺 if 时代它是静默双触发."""
-    m: dict[str, _Handler] = dict(_ACTIONS)
-    for kb in _KNOBS:
-        for ch in kb.dec + kb.inc:
+    m: dict[str, _Handler] = {}
+    for entry in (*_ACTIONS, *_KNOBS):
+        for ch in entry.keys:
             if ch in m:
                 raise AssertionError(f"键 {ch!r} 被绑了两次")
-            m[ch] = kb.apply
+            m[ch] = entry.apply
     return m
 
 
@@ -546,11 +573,9 @@ def run_live(
         f"  帧率 {fps_txt} (req {fps if fps > 0 else 30})  推理边 {infer_txt}"
     )
     print(f"  窗口 {int(actual_w * window_scale)}x{int(actual_h * window_scale)} (可拖拽边角缩放)")
-    print(f"  Q退出 | S风格 | D暗底 | R录制 | {_knob_hints(())}")
-    print(f"  screen 调参: {_knob_hints(_SCREEN)}")
-    print("  screen/cube: 9 0 旋转跟手  g h 通透  { } 棱线")
-    print("  cube  操作: 捏在盒上拖=转 | 双手捏住=移动+缩放+拧 | 张开手=炸开")
-    print("              F 重力开关 | X 归位")
+    for line in _banner_lines():
+        print(f"  {line}")
+    print("  cube  手势: 捏在盒上拖=转 | 双手捏住=移动+缩放+拧 | 张开手=炸开")
     print("=" * 56)
 
     frame_index = 0

@@ -143,13 +143,11 @@ def test_release_never_runs_a_subprocess(fake_writer, refps_calls, tmp_path):
 
 
 def test_keymap_covers_every_declared_key():
-    """_ACTIONS 与 _KNOBS 声明的键必须都能查到 handler."""
+    """_ACTIONS 与 _KNOBS 声明的键必须都能查到 handler, 且落在自己的条目上."""
     km = live._build_keymap()
-    for ch in live._ACTIONS:
-        assert ch in km
-    for kb in live._KNOBS:
-        for ch in kb.dec + kb.inc:
-            assert km[ch].__self__ is kb, f"键 {ch!r} 没落在它自己的旋钮上"
+    for entry in (*live._ACTIONS, *live._KNOBS):
+        for ch in entry.keys:
+            assert km[ch].__self__ is entry, f"键 {ch!r} 没落在它自己的条目上"
 
 
 def test_a_double_bound_key_blows_up_at_build_time(monkeypatch):
@@ -235,11 +233,15 @@ def test_glass_keys_cover_both_boxy_styles():
         assert r.face_alpha > before, f"{style} 下 g/h 失灵"
 
 
-def test_every_knob_shows_up_in_the_banner():
-    """新加一个旋钮却忘了给它一行横幅, 结果是这个键存在、能用、但没人知道."""
-    shown = live._knob_hints(()) + "  " + live._knob_hints(live._SCREEN)
-    for kb in live._KNOBS:
-        assert kb.hint in shown, f"旋钮「{kb.hint}」没出现在开机横幅里"
+def test_every_key_shows_up_in_the_banner():
+    """新加一个键却忘了给它一行横幅, 结果是这个键存在、能用、但没人知道.
+
+    原先只护旋钮 —— 动作键(F/X/g h/{ }/9 0)那几行是手抄的, 护不到。现在两张表
+    都走 _banner_lines, 连 styles 组合没在 _BANNER_GROUPS 里的情况一起挡。
+    """
+    shown = "\n".join(live._banner_lines())
+    for entry in (*live._ACTIONS, *live._KNOBS):
+        assert entry.hint in shown, f"「{entry.hint}」没出现在开机横幅里"
 
 
 def test_a_second_take_never_overwrites_the_first(fake_writer, refps_calls, monkeypatch, tmp_path):
@@ -264,7 +266,7 @@ def test_no_key_pressed_maps_to_nothing():
 
 def test_escape_is_spelled_out():
     assert live._key_char(27) == "\x1b"
-    assert live._key_char(27) in live._ACTIONS
+    assert live._key_char(27) in live._build_keymap()
 
 
 def test_letters_are_case_folded():
