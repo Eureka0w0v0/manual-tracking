@@ -6,7 +6,7 @@
 
 ![五种风格](docs/img/styles.jpg)
 
-（合成手 + 程序生成背景的示意图，`tools/gallery.py` 可重现；实机效果贴在你自己的手上，比这好看。）
+（合成手 + 程序生成背景的示意图；实机效果贴在你自己的手上，比这好看。）
 
 ## 快速开始
 
@@ -152,7 +152,7 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 
 `assets/sample.mp4` **不在仓库里**（它是原作者的抖音视频，不能替人传播）：想跑第三层，放一段自己的 1080p/30fps 双手翻转录像到这个路径。`docs/` 里的所有数字都是对那段原片测的，换了素材要按 `docs/GLASS_BOX_GEOMETRY.md` §3.7 的方法用 `--sweep` 自己重标基线。
 
-`tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手；`tools/gallery.py` 用它渲染顶部那张示意图。
+`tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手。
 
 ## 文档
 

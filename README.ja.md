@@ -6,7 +6,7 @@ Python だけで動くリアルタイムの手のエフェクトです。MediaPi
 
 ![5 つのスタイル](docs/img/styles.jpg)
 
-（`tools/gallery.py` が合成した手と生成した背景で描いたイメージ図です。実機だと自分の手にエフェクトが乗るので、これよりだいぶ見栄えがします。）
+（合成した手と生成した背景で描いたイメージ図です。実機だと自分の手にエフェクトが乗るので、これよりだいぶ見栄えがします。）
 
 ## はじめかた
 
@@ -153,7 +153,7 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # expo/cap をスイ�
 
 `assets/sample.mp4` は**リポジトリに入っていません**（元の作者の動画なので、勝手に配れません）。3 段階目を回すには、両手を返す 1080p/30fps の動画を自分で撮ってそのパスに置いてください。`docs/` の数値はすべて元動画で測ったものなので、自分の素材に替えたら `docs/GLASS_BOX_GEOMETRY.md` §3.7 のやり方で `--sweep` を回してベースラインを取り直す必要があります。
 
-`tools/synth.py` は `tests/` と `cube_check` が共用する合成の手。`tools/gallery.py` はそれで冒頭の図を描いています。
+`tools/synth.py` は `tests/` と `cube_check` が共用する合成の手です。
 
 ## ドキュメント
 

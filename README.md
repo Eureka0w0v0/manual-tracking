@@ -6,7 +6,7 @@ Real-time hand effects in pure Python: MediaPipe Hand Landmarker + OpenCV, pinni
 
 ![Five styles](docs/img/styles.jpg)
 
-(Rendered with synthetic hands on a procedurally generated background by `tools/gallery.py`. On a real camera the effects sit on your own hands and look a lot better than this.)
+(Illustration rendered with synthetic hands on a generated background. On a real camera the effects sit on your own hands and look a lot better than this.)
 
 ## Quick start
 
@@ -153,7 +153,7 @@ The first two touch no camera, media or model, so they run on CI on every push (
 
 `assets/sample.mp4` is **not in the repository** (it is the original creator's video; not ours to redistribute). To run the third layer, put your own 1080p/30fps clip of two hands flipping at that path. Every number in `docs/` was measured against the original clip, so with your own footage re-baseline with `--sweep` as described in `docs/GLASS_BOX_GEOMETRY.md` §3.7.
 
-`tools/synth.py` is the synthetic hand shared by `tests/` and `cube_check`; `tools/gallery.py` renders the picture at the top with it.
+`tools/synth.py` is the synthetic hand shared by `tests/` and `cube_check`.
 
 ## Docs
 
