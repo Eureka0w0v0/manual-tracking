@@ -1,0 +1,11 @@
+{
+  // 解释器钉在 venv 上, 否则 VS Code 可能挑到系统 Python(那里没有 mediapipe)。
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  // 让 Pylance 认得 src/ 布局 —— 没有它, 编辑器里每一行
+  // `from manual_tracking...` 都会飘红(能跑, 但红波浪线很吵)。
+  "python.analysis.extraPaths": ["src"],
+  // 测试面板里直接点着跑 tests/ 的契约(条数见 README)
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests"]
+}

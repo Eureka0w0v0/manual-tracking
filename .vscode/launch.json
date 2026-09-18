@@ -1,0 +1,52 @@
+{
+  // F5 = 带调试启动, Ctrl+F5 = 不带调试(实时循环建议用这个: debugpy 会拖慢帧率)。
+  //
+  // 三个必须项, 少一个就起不来:
+  //   module  —— 必须走 -m 包模式。__main__.py 用的是相对导入(from .pipeline
+  //              import ...), 直接以脚本方式执行会报 "attempted relative import
+  //              with no known parent package"。IDE 的绿色运行按钮干的就是那件事。
+  //   PYTHONPATH —— 包在 src/ 底下, 且本项目**故意不做 pip install**
+  //              (见 pyproject.toml 首行), 不加这个找不到 manual_tracking。
+  //   python  —— 钉死 venv 解释器。用系统 Python 的话 mediapipe/cv2 都不在。
+  //
+  // 风格运行时按 S 就能循环切换, 所以下面三条只是省一次按键。
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "live · cube 悬浮立方体",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "manual_tracking",
+      "args": ["live", "--style", "cube"],
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" },
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "live · mirror 折纸镜面",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "manual_tracking",
+      "args": ["live", "--style", "mirror"],
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" },
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "live · screen 玻璃盒",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "manual_tracking",
+      "args": ["live", "--style", "screen"],
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" },
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

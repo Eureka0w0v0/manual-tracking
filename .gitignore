@@ -16,6 +16,7 @@ models/
 # assets/sample.mp4 **是跟踪的**: 它是所有实测数字的黄金基准, 没有下载来源,
 # 移出仓库 = docs 里的每一个数字都不可复现。2.1MB 换可复现性, 值。
 
-# editor
+# editor —— .vscode/ **是跟踪的**: tasks/launch/settings 写的是本项目怎么跑
+# (-m 包模式、PYTHONPATH=src、钉 venv 解释器), 不是个人偏好; README 提到的
+# Cmd+Shift+B / F5 / ▶ 全靠它们, 新 clone 里没有就等于没写。
 .idea/
-.vscode/

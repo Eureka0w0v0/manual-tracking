@@ -1,0 +1,39 @@
+{
+  // Cmd+Shift+B = 直接跑默认任务, 零调试开销 —— 等价于终端里敲 ./run.sh,
+  // 是实时应用最顺手的一键启动。其余任务: Cmd+Shift+P → "Tasks: Run Task"。
+  //
+  // 默认任务**不传 --style**: 进哪个风格由 live.DEFAULT_STYLE 统一决定,
+  // 全部入口共用一份, 这里手抄一次就会和别人漂开。
+  //
+  // 走 run.sh 而不是直接调 python: 那个脚本自己会设 PYTHONPATH、venv 不在
+  // 就顺手建好装依赖, 保证和终端里的跑法逐字一致。
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "live · 默认风格(cube)",
+      "type": "shell",
+      "command": "./run.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "live · mirror 折纸镜面",
+      "type": "shell",
+      "command": "./run.sh live --style mirror",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "验证 · 三层全跑",
+      "type": "shell",
+      "command": ".venv/bin/ruff check main.py src tools tests && .venv/bin/pytest -q && PYTHONPATH=src .venv/bin/python tools/cube_check.py && PYTHONPATH=src .venv/bin/python tools/e2e_check.py",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    }
+  ]
+}
