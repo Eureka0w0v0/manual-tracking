@@ -248,8 +248,15 @@ def _fx_riso(
         h, w = src.shape[:2]
         g = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
         g = cv2.add(g, bias.take(h, w))  # 饱和加法, 不会回绕
-        return cv2.merge([cv2.LUT(np.roll(g, o, axis=1) if o else g, luts[i])
-                          for i, o in enumerate(offs)])
+        # 错位靠**扩边**取窗, 不用 np.roll —— roll 是环绕的, 会把面最左边
+        # split 列卷到最右边去(实测左白右黑的输入, 最右一列 B 从 20 跳到 238)。
+        # 那条 5px 宽的假套色带偏偏长得像 riso 本来的套色不准, 肉眼认不出是
+        # bug, 但它的内容来自面的另一侧, 盒子一转就跟着乱变。复制边缘像素则
+        # 只是把边上那一列拉长, 与"整张版错开一点"的物理语义一致。
+        pad = cv2.copyMakeBorder(g, 0, 0, split, split, cv2.BORDER_REPLICATE)
+        return cv2.merge(
+            [cv2.LUT(pad[:, split - o : split - o + w], luts[i]) for i, o in enumerate(offs)]
+        )
 
     return fn
 

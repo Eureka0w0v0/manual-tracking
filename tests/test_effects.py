@@ -7,6 +7,8 @@ renderer._fill 拿 fx 的返回值直接 `cv2.copyTo` 进画布 ROI, 所以:
 2. **不许改输入** —— `_poly_window` 交给 fx 的是 `frame_bgr` 的**切片视图**,
    不是副本。哪个 effect 原地写一笔, 就会污染原始摄像头帧, 然后后面所有面
    都吃到脏数据, 表现为"某个面的效果渗到别的面上"。
+3. **不许从对侧搬内容** —— 面的像素只能来自面内对应位置附近。riso 的通道
+   错位曾用 np.roll 实现, 那是环绕的(见最后一条)。
 """
 
 import numpy as np
@@ -56,3 +58,24 @@ def test_colormap_layout(lut):
     """cv2.applyColorMap 只吃 256x1x3 的 uint8 表, 形状错了当场抛."""
     assert lut.shape == (256, 1, 3), lut.shape
     assert lut.dtype == np.uint8, lut.dtype
+
+
+def test_riso_channel_split_does_not_wrap():
+    """riso 的通道错位不许把内容从面的对侧卷过来.
+
+    实现是三个通道各在错开的位置上做阈值。那个错位原先用 np.roll 做, 而
+    np.roll 是**环绕**的: 最左 split 列会原样出现在最右边 —— 实测左白右黑
+    的输入, 最右一列 B 通道从 20 跳到 238。那条 5px 宽的假套色带偏偏长得
+    像 riso 本身的套色不准, 肉眼认不出是 bug, 但它的内容来自面的另一侧,
+    盒子一转就跟着乱变。现在改成 BORDER_REPLICATE 扩边取窗。
+    """
+    riso = next(f.fx for f in BOX_FACES if f.tag == "前")
+    src = np.zeros((40, 60, 3), np.uint8)
+    src[:, :30] = 255  # 左半纯白 / 右半纯黑, 交界正好在中线
+    out = riso(src)
+    # 纯黑那半的最右一列必须和它内侧同色(都在暗部, 三通道一致)
+    assert np.array_equal(out[:, -1], out[:, -10]), "右边缘卷进了左半的内容"
+    assert np.array_equal(out[:, 0], out[:, 9]), "左边缘卷进了右半的内容"
+    # 但明暗交界处的套色带**必须**还在 —— 修边界不能顺手把效果本身削平
+    seam = {tuple(int(v) for v in px) for px in out[20, 24:36]}
+    assert len(seam) >= 2, f"交界处的通道错位消失了: {seam}"
