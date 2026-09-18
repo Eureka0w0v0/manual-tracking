@@ -96,6 +96,9 @@ class _Recorder:
     """
 
     def __init__(self, path: str | Path | None) -> None:
+        # --record 给的路径**只管第一次**录制: stop() 里把它清成 None, 之后再
+        # 按 R 就自动命名。这是有意的 —— 一次会话里录第二条不该把第一条盖掉。
+        # (原先没写这句, 看代码的人会把 stop() 里那行当成漏了复位而"修"回去。)
         self.path: Path | None = Path(path) if path else None
         self.writer: cv2.VideoWriter | None = None
         self.on = False
@@ -146,7 +149,7 @@ class _Recorder:
                 f"{'' if fixed else ' (需要 ffmpeg, 已跳过)'}"
             )
         print(f"REC stop → {path}  ({frames} 帧)")
-        self.path = None
+        self.path = None  # 下次按 R 自动命名, 不覆盖刚录完的这条(见 __init__)
 
     def release(self) -> None:
         """只放句柄, 不做帧率修正 —— finally 里用, 那时不该再跑子进程."""
