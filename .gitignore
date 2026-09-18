@@ -13,8 +13,10 @@ output/
 # 见 src/manual_tracking/paths.py 的 ensure_model()
 models/
 
-# assets/sample.mp4 **是跟踪的**: 它是所有实测数字的黄金基准, 没有下载来源,
-# 移出仓库 = docs 里的每一个数字都不可复现。2.1MB 换可复现性, 值。
+# 样片不入库: assets/sample.mp4 是原作者的抖音视频(12 秒, 有人脸), 公开仓库
+# 不能替人传播。它是 docs 里全部实测数字的基准, 所以第四层 tools/e2e_check.py
+# 要你自己放一段双手素材到这个路径(基线数字按自己的素材重标, 见 README)。
+assets/
 
 # editor —— .vscode/ **是跟踪的**: tasks/launch/settings 写的是本项目怎么跑
 # (-m 包模式、PYTHONPATH=src、钉 venv 解释器), 不是个人偏好; README 提到的

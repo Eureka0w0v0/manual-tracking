@@ -128,6 +128,10 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 前两层不碰摄像头、不读素材、不下模型，所以每次 push 都在 CI 上跑一遍
 （`.github/workflows/ci.yml`）。**第三层留在本地** —— CI 绿了不代表没有频闪。
 
+`assets/sample.mp4` **不在仓库里**（它是原作者的抖音视频，不能替人传播）：想跑第三层，
+放一段自己的 1080p/30fps 双手翻转录像到这个路径。`docs/` 里的所有数字都是对那段原片测的，
+换了素材要按 `docs/GLASS_BOX_GEOMETRY.md` §3.7 的方法用 `--sweep` 自己重标基线。
+
 改完 `screen` 的几何/映射/滤波必须跑 `e2e_check`：它是唯一能发现「可见面每秒切换
 5 次」这类体感灾难的手段——`tests/` 那 163 条全绿也照样看不见频闪。基线与结论见
 [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md) §3.6–3.8。

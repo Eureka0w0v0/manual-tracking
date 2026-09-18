@@ -17,6 +17,7 @@
 """
 
 import sys
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -31,7 +32,7 @@ from manual_tracking.tracker import HandTracker  # noqa: E402
 # 卡的是"越过体感红线", 不是"跟上次一模一样": 后两条留了余量, 正常调参不会
 # 误报。切换率上限就是 5.0 本身 —— 这条线越过去肉眼直接看得见颜色在闪。
 # "当前"是 2026-09-18 默认档的实测(n=142)。07-26 首次写下时是 4.87 / 36.4% /
-# 54.5%(n=154): bd14ed9 给收起/出现加了 ~0.17s 过渡并让下面 run() 跳过过渡帧,
+# 54.5%(n=154): ebfed26 给收起/出现加了 ~0.17s 过渡并让下面 run() 跳过过渡帧,
 # 那 12 帧压扁/长出的面组合变化不再算切换, 数字整体变好(逐 commit 二分确认)。
 # 改了几何/映射/滤波就重跑, 别拿旧数当基线。
 MAX_SWITCH_PER_SEC = 5.0  # 可见面组合每秒变化次数(当前 4.44)
@@ -40,6 +41,12 @@ MIN_BACK_SEEN = 0.45  # "看得见背面"的帧占比下限(当前 57.7%)
 
 
 def load(path="assets/sample.mp4"):
+    if not Path(path).exists():
+        sys.exit(
+            f"找不到样片 {path}\n"
+            "  它不在仓库里(原作者的视频, 不能替人传播)。放一段自己的 1080p/30fps 双手素材到\n"
+            "  这个路径再跑; docs/GLASS_BOX_GEOMETRY.md 里的基线数字是对原片测的, 换素材要重标。"
+        )
     c = cv2.VideoCapture(path)
     fr = []
     while True:

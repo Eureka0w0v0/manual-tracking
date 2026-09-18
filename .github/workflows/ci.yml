@@ -2,8 +2,9 @@
 # 所以能在 CI 上无条件跑完(实测本地合计 <5 秒, CI 上的时间几乎全花在装
 # mediapipe 上)。
 #
-# 第四层 tools/e2e_check.py 需要 assets/sample.mp4(2.1MB, 在 git 里)加上
-# 自动下载的 7.5MB 模型, 而且要跑 358 帧真实推理 —— 那层留在本地: 改过
+# 第四层 tools/e2e_check.py 需要 assets/sample.mp4(**不在 git 里**: 那是原作者的
+# 视频, 自备一段放到这个路径)加上自动下载的 7.5MB 模型, 而且要跑 358 帧真实
+# 推理 —— 那层留在本地: 改过
 # screen 的几何/映射/滤波就必须自己跑一遍(README「开发」一节)。CI 绿了
 # **不代表**没有颜色频闪。
 name: checks
