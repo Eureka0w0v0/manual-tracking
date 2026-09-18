@@ -1,4 +1,4 @@
-[中文](README.md) · [English](README.en.md) · **日本語**
+[中文](README.zh.md) · [English](README.md) · **日本語**
 
 # manual-tracking
 
