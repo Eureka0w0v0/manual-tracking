@@ -29,6 +29,13 @@ from .tracker import FrameHands, HandTracker
 # 一样, 两边还都"看着没错"。
 SOURCE_DIM = 0.55
 
+# live 不传 --style 时进哪个风格 —— **唯一权威**。CLI 里 `live` 子命令的默认值、
+# run_live() 的签名默认、全部一键入口(双击 / IDE ▶ / Cmd+Shift+B / 裸 run.sh, 它们
+# 走 __main__.DEFAULT_ARGV = ["live"])都从这里取。早先一键路径写死 cube 而 `live`
+# 子命令的 argparse 默认还是 mirror: `./run.sh` 进立方体、`./run.sh live` 进折纸
+# 镜面, 差一个词两种结果, 而 README 第一条示例就是后者。
+DEFAULT_STYLE = "cube"
+
 FPS_WARMUP_FRAMES = 5  # 前 N 帧不计入 fps_ema(冷启动: 首帧 read/首次推理远慢于稳态)
 
 
@@ -472,7 +479,7 @@ def run_live(
     *,
     camera: int = -1,
     model_path: str | Path | None = None,
-    style: str = "mirror",
+    style: str = DEFAULT_STYLE,
     show_source: bool = True,
     source_dim: float = SOURCE_DIM,
     filter_on: bool = True,

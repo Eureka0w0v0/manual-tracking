@@ -45,7 +45,7 @@
 `renderer.py` 只剩「按 style 分派 + `screen`/`cube` 的绘制 + 底图缓存 + 左右手角色滞回」。
 
 ```bash
-./run.sh live                              # 默认 1920x1080，自动挑本机内置摄像头
+./run.sh live                              # 默认风格 cube、1920x1080，自动挑本机内置摄像头
 ./run.sh live --style screen               # 直接进玻璃盒
 ./run.sh live --style cube                 # 悬浮立方体（捏住拖=翻面，张开手=炸开）
 ./run.sh live --fps 60                     # 请求 60fps 采集（需摄像头支持，检测链路喂得饱）
@@ -53,8 +53,8 @@
 # 或双击 start-live.command
 ```
 
-IDE 里想直接点运行按钮的话用仓库根的 `main.py`。不带参数 = `live --style cube`，
-和 `start-live.command` 一致（四个一键入口进的是同一个风格）：
+IDE 里想直接点运行按钮的话用仓库根的 `main.py`。不带参数 = `live`，默认风格 `cube`
+由 `live.DEFAULT_STYLE` 统一决定，和 `./run.sh live`、`start-live.command` 一致（所有入口进的是同一个风格）：
 
 ```bash
 python main.py                             # = ./run.sh live --style cube

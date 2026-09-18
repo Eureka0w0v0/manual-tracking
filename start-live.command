@@ -36,5 +36,5 @@ else:
 cap.release()
 PY
 
-# 不传参 —— 默认风格由 __main__.DEFAULT_ARGV 统一决定(全部一键入口共用一份)
+# 不传参 —— 默认风格由 live.DEFAULT_STYLE 统一决定(全部入口共用一份)
 exec .venv/bin/python -m manual_tracking

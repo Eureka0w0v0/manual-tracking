@@ -5,15 +5,21 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .live import SOURCE_DIM as LIVE_DIM, run_live
-from .pipeline import SOURCE_DIM as OFFLINE_DIM, export_landmarks_json, process_video
+from .live import DEFAULT_STYLE as LIVE_STYLE, SOURCE_DIM as LIVE_DIM, run_live
+from .pipeline import (
+    DEFAULT_STYLE as OFFLINE_STYLE,
+    SOURCE_DIM as OFFLINE_DIM,
+    export_landmarks_json,
+    process_video,
+)
 from .renderer import STYLE_ALIASES, STYLES
 
 # 一键入口(双击 start-live.command / IDE 的 ▶ / Cmd+Shift+B / 裸 run.sh)不传参
-# 时进哪个风格 —— **唯一权威**。五个启动器过去各手抄一份, 而 run.sh 那份还抄
-# 漏了 `--style cube`(于是落到 argparse 的 mirror), 同一个"一键"按出两种结果。
-# 现在空参一律交给这里, 改默认风格只动这一行。
-DEFAULT_ARGV = ["live", "--style", "cube"]
+# 时跑什么: 只补子命令, **风格不在这里写**。`live` 子命令的 argparse 默认和
+# run_live() 的签名默认都取自 live.DEFAULT_STYLE, 这里再抄一遍 `--style cube`
+# 就是第二份事实源 —— 原先正是这样: 空参走这里进 cube, `./run.sh live` 却落到
+# argparse 自己的 mirror, 差一个词两种结果。改默认风格去 live.DEFAULT_STYLE。
+DEFAULT_ARGV = ["live"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,8 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--style",
         choices=STYLES + tuple(STYLE_ALIASES),
-        default="mirror",
-        help="Overlay style (default: mirror; legacy names map to current styles)",
+        default=OFFLINE_STYLE,
+        help=f"Overlay style (default: {OFFLINE_STYLE}; legacy names map to current styles)",
     )
     run.add_argument("--no-source", action="store_true", help="Black bg, no source video")
     run.add_argument(
@@ -56,8 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument(
         "--style",
         choices=STYLES + tuple(STYLE_ALIASES),
-        default="mirror",
-        help="Overlay style (default: mirror; legacy names map to current styles)",
+        default=LIVE_STYLE,
+        help=f"Overlay style (default: {LIVE_STYLE}; legacy names map to current styles)",
     )
     live.add_argument("--no-source", action="store_true", help="Black bg, hide camera image")
     live.add_argument(

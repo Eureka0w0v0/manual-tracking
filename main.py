@@ -12,9 +12,10 @@
   另外本项目故意不做 pip install(见 pyproject.toml 首行), 所以也不能指望
   解释器自己找得到 manual_tracking。
 
-不带参数直接跑 = `live --style cube`, 但那个默认值**不在这里**定义 ——
-它是 `__main__.DEFAULT_ARGV`, 全部一键入口(双击 / Cmd+Shift+B / F5 / ▶ /
-裸 run.sh)共用同一份。这里只负责把空参原样交下去。
+不带参数直接跑 = `live`, 进的是 `live.DEFAULT_STYLE`(目前 cube)。默认值
+**不在这里**定义: 空参交给 `__main__.DEFAULT_ARGV`, 风格由 live.DEFAULT_STYLE
+统一决定, 全部入口(双击 / Cmd+Shift+B / F5 / ▶ / 裸 run.sh / `run.sh live`)
+共用同一份。这里只负责把空参原样交下去。
 
 想换风格/分辨率, 照常传参:
 

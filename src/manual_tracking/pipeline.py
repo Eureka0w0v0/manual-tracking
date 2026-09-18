@@ -16,6 +16,10 @@ from .tracker import HandTracker
 # 实拍底的压暗系数 —— **离线成片的策略, 所以归 pipeline 管**(live 的那份在
 # live.SOURCE_DIM)。成片里特效是主角, 底图只当环境, 所以比 live 压得更暗。
 SOURCE_DIM = 0.35
+# 离线 `run` 不传 --style 时的风格。和 live 分开定(live.DEFAULT_STYLE 是 cube):
+# cube 要人捏着它才动, 离线视频里没人捏, 渲染出来只是一个自转的盒子; 成片场景
+# 的默认是折纸镜面。
+DEFAULT_STYLE = "mirror"
 
 
 def export_landmarks_json(
@@ -58,7 +62,7 @@ def process_video(
     output_path: str | Path,
     *,
     model_path: str | Path | None = None,
-    style: str = "mirror",
+    style: str = DEFAULT_STYLE,
     show_source: bool = True,
     source_dim: float = SOURCE_DIM,
     filter_on: bool = True,
