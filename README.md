@@ -30,9 +30,19 @@
 - **`banner`**：TouchDesigner 横幅（v2）——黄阈值头带 / X-ray 中窗 / 白分隔线 / 悬出红脚带，全部是摄像头画面的屏幕空间双色调
 - **`wire`**：霓虹电流骨架——辉光 + 芯线 + 沿骨骼流动的光点（`fabric`/`track`/`outline` 为旧名别名）
 
-可调参数按层分布：`mirror`/`banner` 的在 `renderer.py` 顶部 tunables 区，`screen`
-的盒子几何在 `glassbox.py`，`cube` 在 `floatcube.py`，每个面的像素处理参数在
-`effects.py` 顶部。下面的实时键位改的是同名字段，退出后恢复常量默认值。
+可调参数就放在各自负责的模块顶部，下面的实时键位改的是同名字段，退出后恢复常量默认值：
+
+| 想调的东西 | 去哪个文件 |
+|---|---|
+| 每个面的像素处理（riso / 硬阈值 / 点云 / 四叉树 / 网点 / 蓝顶 glitch） | `effects.py` |
+| `screen` 的盒子几何与滤波 | `glassbox.py` |
+| `cube` 的手感（增益、惯性、重力、炸开、抓取判据） | `floatcube.py` |
+| `mirror` / `banner` / `wire` 三种风格 | `sheet.py` / `banner.py` / `neon.py` |
+| 长方体的顶点序与弱透视投影（`screen` 与 `cube` 共用的**唯一**一份） | `boxgeom.py` |
+| 多边形填充、描边这些绘制原语 | `paint.py` |
+| 检测线程与速度外推 | `detect_service.py` |
+
+`renderer.py` 只剩「按 style 分派 + `screen`/`cube` 的绘制 + 底图缓存 + 左右手角色滞回」。
 
 ```bash
 ./run.sh live                              # 默认 1920x1080，自动挑本机内置摄像头
@@ -101,8 +111,8 @@ HUD 末尾显示当前朝向镜头的面（如 `顶+前`），调 roll 时用来
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check main.py src tools tests                # 静态检查（配置在 pyproject.toml）
-.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，103 条，<1 秒
-PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，26 条断言
+.venv/bin/pytest                                           # 纯逻辑契约 + 渲染冒烟，153 条，<1 秒
+PYTHONPATH=src .venv/bin/python tools/cube_check.py        # cube 手感底线，27 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py         # screen 手感底线，3 条断言
 PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参数
 ```
@@ -111,15 +121,15 @@ PYTHONPATH=src .venv/bin/python tools/e2e_check.py --sweep # 扫 expo/cap 找参
 
 | 层 | 位置 | 挡什么 | 依赖 |
 |---|---|---|---|
-| 契约 | `tests/` | 改错了会崩：面拓扑、effect 的尺寸/不可变契约、盒子刚性、别名表、handedness 滞回 | 无（合成手，不读素材） |
-| 手感 | `tools/cube_check.py` | 拖不动、转回头、松手乱飘 | 无（合成手） |
+| 契约 | `tests/` | 改错了会崩：面拓扑与顶点序对齐、effect 的尺寸/不可变契约、盒子刚性、别名表、handedness 滞回、外推与录制帧率、键位分流 | 无（合成手，不读素材） |
+| 手感 | `tools/cube_check.py` | 拖不动、转回头、松手乱飘、撑出画面 | 无（合成手） |
 | 回归 | `tools/e2e_check.py` | 改差了不好用：颜色频闪、背面读不出 | 样片 + 模型 |
 
 前两层不碰摄像头、不读素材、不下模型，所以每次 push 都在 CI 上跑一遍
 （`.github/workflows/ci.yml`）。**第三层留在本地** —— CI 绿了不代表没有频闪。
 
 改完 `screen` 的几何/映射/滤波必须跑 `e2e_check`：它是唯一能发现「可见面每秒切换
-5 次」这类体感灾难的手段——`tests/` 那 103 条全绿也照样看不见频闪。基线与结论见
+5 次」这类体感灾难的手段——`tests/` 那 153 条全绿也照样看不见频闪。基线与结论见
 [`docs/GLASS_BOX_GEOMETRY.md`](docs/GLASS_BOX_GEOMETRY.md) §3.6–3.8。
 
 `tools/synth.py` 是 `tests/` 和 `cube_check` 共用的合成手（21 个 landmark 全铺满：
