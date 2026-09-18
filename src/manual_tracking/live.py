@@ -640,12 +640,13 @@ def run_live(
 
             # 没按键时 waitKey 返回 -1(&0xFF = 255), 查表 miss —— 直接跳过, 不
             # 像原先那样每帧空跑 17 条 if。
-            handler = keymap.get(_key_char(key)) if key != 255 else None
+            ch = _key_char(key) if key != 255 else ""
+            handler = keymap.get(ch) if ch else None
             if handler is not None:
                 tick.out = out  # handler 要用的当帧量, 只在真按了键时才刷
                 tick.fps_ema = fps_ema
                 tick.warm = frame_index >= FPS_WARMUP_FRAMES + 10
-                handler(tick, _key_char(key))
+                handler(tick, ch)
                 if tick.quit:
                     break
 
