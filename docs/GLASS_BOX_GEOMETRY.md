@@ -1,6 +1,8 @@
 # 玻璃盒(screen)几何标定
 
-`renderer.py` 里 `BOX_*` 常数的来源。要改效果先看这里，别瞎调。
+`glassbox.py` 里 `BOX_*` 常数的来源。要改效果先看这里，别瞎调。
+
+（顶点序与弱透视投影本身在 `boxgeom.py`，`screen` 与 `cube` 共用同一份。）
 
 ## 1. 原片实测
 

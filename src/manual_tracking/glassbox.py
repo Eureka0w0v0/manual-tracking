@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from .boxgeom import CORNER_SIGNS, project_box
 from .handgeom import grip
 from .tracker import HandPose
-
-
 
 # ---- tunables (哥哥要调效果基本都在这里) ----
 # 双手跨距小于此值不画特效。renderer 也用它(screen/mirror/banner 三种风格
@@ -286,17 +285,14 @@ class GlassBox:
         focal = BOX_FOCAL * max(length, height + depth)
         anchor = (gL + gR) * 0.5
 
-        cam = np.empty((8, 3), np.float32)
-        scr = np.empty((8, 2), np.float32)
         # w 的原点 = 锚点 = 绕长轴旋转的不动点。depth_bias=0.5 时体心落在手上,
         # 盒子跟着手整体转; =0 时前面压在手上, 翻转会变成"前棱当轴甩"。
         w_front = depth * self.depth_bias
-        for xi, t in enumerate((-0.5, 0.5)):
-            for ui, u in enumerate((-0.5 * height, 0.5 * height)):
-                for wi, w in enumerate((w_front, w_front - depth)):
-                    p3 = axis * t + b_hat * u + c_hat * w
-                    k = xi * 4 + ui * 2 + wi
-                    # 相机系右手基: x 右, y 上(屏幕 y 取负), z 朝观察者
-                    cam[k] = (p3[0], -p3[1], p3[2])
-                    scr[k] = anchor + p3[:2] * (focal / (focal - p3[2]))
+        # 顶点序与相机系约定归 boxgeom(effects.BOX_FACES 的 verts 按那份写死)。
+        # 三个符号列各配一个基向量: x→长轴, u→截面高轴 b̂, w→进深轴 ĉ。
+        # w 那一列不对称, 因为不动点由 depth_bias 挪过: +0.5(前)→w_front,
+        # −0.5(后)→w_front−depth, 写成 w_front − depth×(0.5 − sw) 正好覆盖。
+        sx, su, sw = CORNER_SIGNS[:, 0:1], CORNER_SIGNS[:, 1:2], CORNER_SIGNS[:, 2:3]
+        local = axis * sx + b_hat * (su * height) + c_hat * (w_front - depth * (0.5 - sw))
+        scr, cam = project_box(local, anchor, focal)
         return scr, cam, focal, length

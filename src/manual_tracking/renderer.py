@@ -36,6 +36,7 @@ import random
 import cv2
 import numpy as np
 
+from .boxgeom import CORNER_SIGNS, project_box
 from .floatcube import EXPLODE_DIST, RIPPLE_LIFE, FloatCube
 from .glassbox import MIN_SPAN_PX, GlassBox
 from .handgeom import orient, palm_center, pinch
@@ -88,12 +89,6 @@ SHADE_MIN = 0.72
 NEON_GLOW = (255, 160, 40)  # wire 霓虹: 辉光层(电青蓝 BGR)
 NEON_CORE = (255, 240, 210)  # wire 霓虹: 芯线(近白偏青)
 NEON_FLOW = 0.06  # 流动光点的相位步进(/帧); 一根骨头 ~0.5s 走完
-# 立方体局部角点(边长 1), 顶点序与 FloatCube.project / BOX_FACES 一致 ——
-# 炸开视图把每面的 4 个角沿面法线推离体心后独立投影。
-_CORNERS = np.array(
-    [[x, u, w] for x in (-0.5, 0.5) for u in (-0.5, 0.5) for w in (0.5, -0.5)],
-    np.float32,
-)
 
 # ---- 风格注册表(唯一权威; live/__main__ 从这里导入, 不要手抄) ----
 STYLES = ("mirror", "screen", "cube", "banner", "wire")
@@ -604,7 +599,9 @@ class VectorOverlayRenderer:
         eye = np.array([0.0, 0.0, focal], np.float32)
         layers: list[tuple[float, Face, np.ndarray, bool, float]] = []
         for face in BOX_FACES:
-            ql = _CORNERS[list(face.verts)] * size
+            # 角点与投影都走 boxgeom —— 薄片飞出去之后它仍然是"同一个盒子的
+            # 第 k 个角", 拿另一套坐标推的话面和像素处理就对不上了。
+            ql = CORNER_SIGNS[list(face.verts)] * size
             fc = ql.mean(axis=0)
             n_local = fc / max(float(np.linalg.norm(fc)), 1e-6)
             p3 = (ql + n_local * dist) @ cube.rot.T  # 每行 rot@v
@@ -612,8 +609,8 @@ class VectorOverlayRenderer:
             n3 = cube.rot @ n_local
             is_front = float(n3 @ (eye - fc3)) > 0.0
             shade = _shade_of(np.array([n3[0], -n3[1], n3[2]], np.float32))
-            scr4 = cube.pos + p3[:, :2] * (focal / (focal - p3[:, 2]))[:, None]
-            layers.append((float(fc3[2]), face, scr4.astype(np.float32), is_front, shade))
+            scr4, _ = project_box(p3, cube.pos, focal)
+            layers.append((float(fc3[2]), face, scr4, is_front, shade))
         layers.sort(key=lambda v: v[0])  # 由远及近
         for _, face, scr4, is_front, shade in layers:
             alpha = self.face_alpha if is_front else self.back_alpha

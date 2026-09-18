@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .boxgeom import CORNER_SIGNS, project_box
 from .handgeom import palm_center, pinch
 from .landmarks import INDEX_MCP, INDEX_TIP, PINKY_MCP, PINKY_TIP, THUMB_TIP
 from .tracker import HandPose
@@ -482,17 +483,12 @@ class FloatCube:
         self.rot = (u @ vt).astype(np.float32)
 
     def project(self, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, float]:
-        """→ (屏幕 8 顶点, 相机系 8 顶点, 焦距). 顶点序与 effects.BOX_FACES 一致."""
-        s = self.size * 0.5
+        """→ (屏幕 8 顶点, 相机系 8 顶点, 焦距).
+
+        顶点序与相机系约定都归 boxgeom 管 —— effects.BOX_FACES 的 verts 按
+        那一份写死, 这里再抄一遍三重循环就等于开第二个事实源。
+        """
         focal = CUBE_FOCAL * self.size
-        cam = np.empty((8, 3), np.float32)
-        scr = np.empty((8, 2), np.float32)
-        for xi, x in enumerate((-s, s)):
-            for ui, u in enumerate((-s, s)):
-                for wi, wv in enumerate((s, -s)):
-                    p3 = self.rot @ np.array([x, u, wv], np.float32)
-                    k = xi * 4 + ui * 2 + wi
-                    # 相机系右手基: x 右, y 上(屏幕 y 朝下故取负), z 朝观察者
-                    cam[k] = (p3[0], -p3[1], p3[2])
-                    scr[k] = self.pos + p3[:2] * (focal / (focal - p3[2]))
+        local = (CORNER_SIGNS * self.size) @ self.rot.T  # 每行 = rot @ 角点
+        scr, cam = project_box(local, self.pos, focal)
         return scr, cam, focal
