@@ -1,6 +1,6 @@
 """新渲染路径的冒烟契约: 不开摄像头, 合成手直接喂 render().
 
-这些路径(炸开/霓虹/涟漪/拖影)都带几何投影或 ROI 数学, "改错了"表现为
+这些路径(炸开/涟漪/出现动画)都带几何投影或 ROI 数学, "改错了"表现为
 OpenCV 断言崩溃或 ROI 越界 —— 冒烟就能抓到; 好不好看归哥哥实拍。
 """
 
@@ -59,17 +59,6 @@ def test_ripple_draws_without_error(frame):
     for k in range(2, 11):
         out = r.render(frame, FrameHands(k, [hand(640, 456, pinch=True)]))
     assert out.shape == frame.shape
-
-
-def test_wire_neon_renders_and_glows(frame):
-    """霓虹骨架: 画面变亮(加法辉光), 手贴画面边缘时 ROI clamp 不越界."""
-    r = VectorOverlayRenderer(style="wire")
-    base = r.render(frame, FrameHands(0, []))
-    lit = r.render(frame, FrameHands(1, [hand(640, 400, pinch=False)]))
-    assert float(lit.astype(np.int16).mean()) > float(base.astype(np.int16).mean())
-    for k, (cx, cy) in enumerate([(5, 5), (W - 5, 5), (5, H - 5), (W - 5, H - 5)]):
-        out = r.render(frame, FrameHands(2 + k, [hand(cx, cy, pinch=False)]))
-        assert out.shape == frame.shape
 
 
 def test_screen_ease_grows_box(frame):

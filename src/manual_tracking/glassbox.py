@@ -19,7 +19,7 @@ from .handgeom import grip
 from .tracker import HandPose
 
 # ---- tunables (哥哥要调效果基本都在这里) ----
-# 双手跨距小于此值不画特效。renderer 也用它(screen/mirror/banner 三种风格
+# 双手跨距小于此值不画特效。sheet 也用它(screen/mirror 两种风格
 # 的共同兜底), 从这里导入 —— 层级上 glassbox 在 renderer 下面, 反过来会成环。
 MIN_SPAN_PX = 40.0
 # 长方体参数化: 下面四个常数由原片帧 312 的四个角点 + 后/前棱比联立数值反解,
@@ -129,7 +129,7 @@ class GlassBox:
         方法, 清掉 `_shut` 下一帧就会按 gap_shut(而不是 gap_shut+GAP_HYST)重判,
         滞回等于没有。手真的全离场时用 hands_left(), 那里才连它一起清。
 
-        **也不含左右手角色滞回** —— 那个是三种风格共用的, 归 renderer 管。
+        **也不含左右手角色滞回** —— 那个是 mirror/screen 共用的, 归 renderer 管。
         """
         self._ema = None
         self._psi_rate = 0.0

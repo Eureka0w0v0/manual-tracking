@@ -14,7 +14,7 @@ paint.fill 拿 fx 的返回值直接 `cv2.copyTo` 进画布 ROI, 所以:
 import numpy as np
 import pytest
 
-from manual_tracking.effects import BLUE_LUT, BOX_FACES, XRAY_CMAP, fx_mirror
+from manual_tracking.effects import BLUE_LUT, BOX_FACES, fx_mirror
 
 ALL_FX = [pytest.param(f.fx, id=f.tag) for f in BOX_FACES] + [
     pytest.param(fx_mirror(0.0), id="mirror-平"),
@@ -53,7 +53,7 @@ def test_handles_flat_input(fx, rng):
     assert np.isfinite(out.astype(np.float32)).all()
 
 
-@pytest.mark.parametrize("lut", [BLUE_LUT, XRAY_CMAP])
+@pytest.mark.parametrize("lut", [BLUE_LUT])
 def test_colormap_layout(lut):
     """cv2.applyColorMap 只吃 256x1x3 的 uint8 表, 形状错了当场抛."""
     assert lut.shape == (256, 1, 3), lut.shape

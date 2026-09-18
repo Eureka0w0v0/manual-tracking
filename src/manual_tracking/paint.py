@@ -1,6 +1,6 @@
 """绘制原语: 把一块多边形填成"被某种像素处理过的背景". 不知道有"手"这回事.
 
-五种风格唯一的上色出口都在这里。早先有 _cmap_fill / _fx_fill / _mirror_fill
+三种风格唯一的上色出口都在这里。早先有 _cmap_fill / _fx_fill / _mirror_fill
 三个函数, 骨架逐字相同、只有"怎么把 src 变成颜色"那一行不同; 那一行外提成
 effects.FaceEffect 之后就只剩这一个 fill()。
 

@@ -18,14 +18,6 @@ from typing import Callable, NamedTuple
 import cv2
 import numpy as np
 
-# ---- banner 风格的双色调配色(BGR; 注释是原片取色的 hex) ----
-BANNER_YELLOW = (26, 177, 223)  # #DFB11A
-BANNER_Y_DARK = (5, 16, 32)  # #201005
-BANNER_RED = (8, 23, 213)  # #D51708
-BANNER_R_DARK = (0, 8, 58)  # #3A0800
-BANNER_WHITE = (218, 230, 236)  # #ECE6DA
-BANNER_W_DARK = (16, 26, 42)  # #2A1A10
-
 # ---- 每面特效的参数(六个面各一套, 见 BOX_FACES) ----
 # 硬阈值双色(丝网印): 取自 douyin TouchDesigner 屏录实测
 DUOTONE_DARK = (146, 101, 42)  # 深蓝 BGR(实测占 57%)
@@ -61,7 +53,6 @@ GLITCH_H = (10, 27)
 GLITCH_W = (40, 260)
 GLITCH_SHIFT = 40
 GLITCH_HOLD = 2  # 每 N 帧换一次图案, 逐帧换会闪成噪声
-BANNER_THRESH = 115  # banner 双色调亮度阈值
 
 # ---- 共享原语(两个以上 effect 用到; 单独一个用的就地写) ----
 
@@ -126,29 +117,6 @@ def _build_lut(points: list[tuple[float, tuple[float, float, float]]]) -> np.nda
     return np.clip(lut, 0, 255).astype(np.uint8).reshape(256, 1, 3)
 
 
-def _duotone_cmap(
-    dark: tuple[int, int, int],
-    bright: tuple[int, int, int],
-    thresh: int,
-    soft: int = 0,
-) -> np.ndarray:
-    """双色调 colormap: 亮度阈值拍成两色(soft>0 时软过渡)."""
-    xs = np.arange(256, dtype=np.float32)
-    if soft > 0:
-        w = np.clip((xs - (thresh - soft)) / (2.0 * soft), 0.0, 1.0)
-    else:
-        w = (xs > thresh).astype(np.float32)
-    cm = np.array(dark, np.float32) * (1.0 - w[:, None]) + np.array(bright, np.float32) * w[:, None]
-    return np.clip(cm, 0, 255).astype(np.uint8).reshape(256, 1, 3)
-
-
-def _xray_cmap() -> np.ndarray:
-    """中窗模式 A "苍白 X-ray": 以 0.5 为轴的 solarize(输出下限 0.5), 去饱和."""
-    g = np.arange(256, dtype=np.float32) / 255.0
-    sol = np.clip((0.5 + np.abs(g - 0.5)) * 255.0, 0, 255).astype(np.uint8)
-    return cv2.cvtColor(sol.reshape(256, 1), cv2.COLOR_GRAY2BGR)
-
-
 # 顶面蓝的逐像素实测 LUT(反相型: 背景越亮, 面越暗)
 BLUE_LUT = _build_lut(
     [
@@ -160,10 +128,6 @@ BLUE_LUT = _build_lut(
         (250, (234, 135, 116)),
     ]
 )
-YELLOW_CMAP = _duotone_cmap(BANNER_Y_DARK, BANNER_YELLOW, BANNER_THRESH)
-WHITE_CMAP = _duotone_cmap(BANNER_W_DARK, BANNER_WHITE, BANNER_THRESH, soft=45)
-RED_CMAP = _duotone_cmap(BANNER_R_DARK, BANNER_RED, BANNER_THRESH)
-XRAY_CMAP = _xray_cmap()
 
 
 # ---- 每面的像素处理(effect): src_bgr → out_bgr, 同尺寸 ----

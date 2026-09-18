@@ -5,7 +5,7 @@
 外移并乘冷灰。描边只描自由边, 带 ±2px 色差晕。
 
 参数全部来自对原视频的逐像素逆向测量, 改之前先读 docs/GLASS_BOX_GEOMETRY.md。
-这一层只吃**已经分好左右**的两只手(角色滞回归 renderer 管, 三种风格共用)。
+这一层只吃**已经分好左右**的两只手(角色滞回归 renderer 管, 与 screen 共用)。
 """
 
 from __future__ import annotations

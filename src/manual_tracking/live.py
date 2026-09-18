@@ -607,7 +607,7 @@ def run_live(
         tick = _Tick(renderer, rec, np.empty((1, 1, 3), np.uint8))
 
         print("=" * 56)
-        print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体 / TD横幅")
+        print("  MANUAL TRACKING LIVE — 折纸镜面 / 彩色玻璃盒 / 悬浮立方体")
         print("  拇指+食指捏纸；翻转一只手拧麻花；捏死压成细线")
         infer_txt = "全帧" if infer_size <= 0 else str(infer_size)
         fps_txt = f"{actual_fps:.0f}" if actual_fps > 0 else "?"

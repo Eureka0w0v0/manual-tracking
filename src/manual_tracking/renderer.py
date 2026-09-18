@@ -16,9 +16,8 @@ screen — 彩色玻璃盒(v1 后半, 参数化刚体长方体):
   只描可见面的棱(背面的棱被实体挡住)。
   双手靠拢 → 盒子收起(什么都不画), 拉开 → 重新出现。
 
-三个不带 3D 盒子的风格各自成模块: mirror→sheet.py / banner→banner.py /
-wire→neon.py; 它们共用的填充原语在 paint.py。这里留下 screen 与 cube,
-以及风格注册表、底图缓存、左右手角色滞回。
+不带 3D 盒子的 mirror 单独成模块 sheet.py, 填充原语在 paint.py。这里留下
+screen 与 cube, 以及风格注册表、底图缓存、左右手角色滞回。
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ import random
 import cv2
 import numpy as np
 
-from . import banner, neon, sheet
+from . import sheet
 from .boxgeom import CORNER_SIGNS, project_box
 from .effects import (
     BOX_FACES,
@@ -60,14 +59,13 @@ _LIGHT /= float(np.linalg.norm(_LIGHT))
 SHADE_MIN = 0.72
 
 # ---- 风格注册表(唯一权威; live/__main__ 从这里导入, 不要手抄) ----
-STYLES = ("mirror", "screen", "cube", "banner", "wire")
+STYLES = ("mirror", "screen", "cube")
 STYLE_ALIASES = {
     "fabric": "mirror",
     "frame": "mirror",
     "planes": "mirror",
     "fluid": "mirror",
     "track": "screen",
-    "outline": "wire",
 }
 
 
@@ -95,7 +93,7 @@ BOX_SAMPLE_K = 0.20  # 顶面采样点下移量(盒长比例, 实测 250-300px@1
 # 面与面的交界靠颜色差异本身就读得出来, 更像一整块玻璃。
 # 去掉安全: 相邻面共享顶点, fillPoly 直接接上 —— 实测可见面之间的未覆盖
 # 缝隙占剪影 0.000%(中位/p90/最大都是 0), 不会露出底图。
-# mirror/banner 走 paint.edge_line 的默认 3px, 不受这个值影响。
+# mirror 走 paint.edge_line 的默认 3px, 不受这个值影响。
 BOX_EDGE_W = 0
 # 玻璃质感: 面的不透明度。原片实测"透"的来源是 gradient map 保留了背景亮度
 # 结构(面内 std 与盒外背景同量级), 而不是 alpha 混合 —— 但那只让面**有纹理**,
@@ -205,7 +203,7 @@ class VectorOverlayRenderer:
     def _reset_box(self) -> None:
         """只清 screen 的盒子状态. 双手合拢/切风格时用。
 
-        **不碰 _role_ids** —— 那是三种风格共用的左右手角色滞回, 由 _ordered
+        **不碰 _role_ids** —— 那是 mirror/screen 共用的左右手角色滞回, 由 _ordered
         维护。早先版本一并清掉, 于是双手合拢的每一帧都在重置角色滞回, 而
         ROLE_HYST_PX 的存在理由恰恰就是"防双手并拢时角色逐帧翻转"——护栏
         在最该生效的场景里被自己关掉了。
@@ -271,16 +269,9 @@ class VectorOverlayRenderer:
         elif self.style == "screen":
             left, right = self._ordered(hands)
             self._draw_box(out, frame_bgr, left, right, frame_hands.index)
-        elif self.style == "banner":
-            banner.draw(out, frame_bgr, *self._ordered(hands))
-        # wire 落到这里: 两只手也不需要盒子/纸面, 骨架在下面统一画
 
         for i, h in enumerate(hands):
-            if self.style == "wire":
-                # wire 不再是调试骨架: 霓虹电流(辉光 + 芯线 + 流动光点)
-                neon.draw(out, h, frame_hands.index)
-            else:
-                self._skeleton(out, h, i)
+            self._skeleton(out, h, i)
         return out
 
     def _skeleton(self, canvas: np.ndarray, hand: HandPose, index: int = 0) -> None:

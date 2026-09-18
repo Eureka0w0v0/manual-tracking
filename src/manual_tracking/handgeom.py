@@ -1,6 +1,6 @@
 """手部姿态 → 少数几个低噪标量/锚点. 不碰画布, 不知道有"盒子"这回事.
 
-renderer(mirror/banner)和 glassbox(screen)都从这里取手部量, 所以它是共享叶子。
+sheet(mirror)、floatcube(cube)和 glassbox(screen)都从这里取手部量, 所以它是共享叶子。
 每个函数只做一件事, 且都有原片实测背书——为什么用这个点而不是那个点, 见
 docs/GLASS_BOX_GEOMETRY.md。
 """
