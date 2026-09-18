@@ -7,9 +7,9 @@
 
 import numpy as np
 import pytest
-from synth import PALM, hand
 
 from manual_tracking.glassbox import GlassBox
+from synth import PALM, hand
 
 # 顶点索引 = x*4 + u*2 + w, 所以沿三个轴的棱就是差 4 / 2 / 1 的顶点对
 EDGE_GROUPS = {

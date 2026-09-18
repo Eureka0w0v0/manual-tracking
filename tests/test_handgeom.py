@@ -2,10 +2,10 @@
 
 import numpy as np
 import pytest
-from synth import PALM, hand
 
 from manual_tracking.handgeom import grip, orient, palm_center, pinch
 from manual_tracking.landmarks import INDEX_MCP, PINKY_MCP
+from synth import PALM, hand
 
 
 def test_palm_center_inside_hand():

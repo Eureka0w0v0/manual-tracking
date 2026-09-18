@@ -9,10 +9,20 @@ src = ["src", "tools", "tests"]
 #      两处都没被用到却看着像旋钮 —— 这条规则就是为了挡它。
 # E/W = pycodestyle: 语法级排版错误。
 # B   = bugbear: 可变默认参数、循环里绑定闭包变量之类的真 bug。
-select = ["E", "F", "W", "B"]
+# I   = isort: import 分组与排序。开它的直接理由是 __main__.py 里 `.pipeline`
+#       排在 `.live` 前面、renderer.py 里 `.effects` 夹在 `.glassbox` 后面 ——
+#       靠人眼维护的顺序已经开始漂, 而模块间的依赖方向(paths → tracker →
+#       handgeom → glassbox/floatcube → renderer → live)恰恰是这个项目
+#       用来讲架构的东西, 顺序乱了读起来就没有那条线了。
+select = ["E", "F", "W", "B", "I"]
 ignore = [
     "E741",  # 单字母变量名 l/I/O: 几何代码里 l=length、o=orient 是本地惯例
 ]
+
+[tool.ruff.lint.isort]
+# `from .live import SOURCE_DIM as LIVE_DIM, run_live` 保持一行 —— 默认会把带
+# as 的那个拆成独立一行, 同一个模块被写两遍, 比排序前更难读。
+combine-as-imports = true
 
 [tool.ruff.lint.per-file-ignores]
 # 验证脚本/测试要先把 src 放上 sys.path 才能 import manual_tracking, 模块级

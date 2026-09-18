@@ -23,8 +23,8 @@ import numpy as np
 
 sys.path.insert(0, "src")
 from manual_tracking.effects import BOX_FACES  # noqa: E402
-from manual_tracking.renderer import VectorOverlayRenderer  # noqa: E402
 from manual_tracking.paths import ensure_model  # noqa: E402
+from manual_tracking.renderer import VectorOverlayRenderer  # noqa: E402
 from manual_tracking.tracker import HandTracker  # noqa: E402
 
 # ---- 手感底线(数字见 docs/GLASS_BOX_GEOMETRY.md §3.6 的 expo×cap 网格) ----

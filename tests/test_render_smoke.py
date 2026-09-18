@@ -6,10 +6,10 @@ OpenCV 断言崩溃或 ROI 越界 —— 冒烟就能抓到; 好不好看归哥�
 
 import numpy as np
 import pytest
-from synth import hand
 
 from manual_tracking.renderer import VectorOverlayRenderer
 from manual_tracking.tracker import FrameHands
+from synth import hand
 
 H, W = 720, 1280
 

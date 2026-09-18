@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .pipeline import SOURCE_DIM as OFFLINE_DIM, export_landmarks_json, process_video
 from .live import SOURCE_DIM as LIVE_DIM, run_live
+from .pipeline import SOURCE_DIM as OFFLINE_DIM, export_landmarks_json, process_video
 from .renderer import STYLE_ALIASES, STYLES
 
 # 一键入口(双击 start-live.command / IDE 的 ▶ / Cmd+Shift+B / 裸 run.sh)不传参
