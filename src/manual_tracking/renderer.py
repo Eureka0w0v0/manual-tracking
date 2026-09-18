@@ -53,10 +53,10 @@ from .effects import (
     WHITE_CMAP,
     XRAY_CMAP,
     YELLOW_CMAP,
-    FaceEffect,
     fx_mirror,
     _fx_lut,
 )
+from .paint import EDGE, WHITE_HOT, edge_line, fill, poly_window, seg_cross
 from .landmarks import (
     CONNECTIONS,
     INDEX_TIP,
@@ -72,8 +72,6 @@ GOLD = (40, 170, 255)
 CUBE_GRIP = (210, 255, 120)  # cube: 抓住了(亮青绿, 和金色骨架区分得开)
 CUBE_IDLE = (170, 170, 170)  # cube: 没抓住
 ORANGE = (20, 110, 240)
-WHITE_HOT = (230, 250, 255)
-EDGE = (255, 255, 255)  # free-edge outlines (实测纯白 4px@1080p)
 FRINGE_WARM = (40, 150, 255)  # 描边色差晕: 亮侧橙
 FRINGE_COOL = (235, 225, 90)  # 描边色差晕: 暗侧青
 
@@ -143,98 +141,6 @@ BOX_FACE_ALPHA = 0.72  # 正向面(朝镜头那几个)的不透明度
 BOX_BACK_ALPHA = 0.30  # 背向面(内壁)的不透明度; 更淡, 读作"隔着一层玻璃看到的"
 
 
-# ---- 手部几何 ----
-
-
-def _seg_cross(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, p4: np.ndarray) -> np.ndarray | None:
-    """Intersection of segments p1p2 / p3p4 (interior only), else None."""
-    d1 = p2 - p1
-    d2 = p4 - p3
-    denom = float(d1[0] * d2[1] - d1[1] * d2[0])
-    if abs(denom) < 1e-6:
-        return None
-    r = p3 - p1
-    t = float(r[0] * d2[1] - r[1] * d2[0]) / denom
-    u = float(r[0] * d1[1] - r[1] * d1[0]) / denom
-    if 0.02 < t < 0.98 and 0.02 < u < 0.98:
-        return (p1 + d1 * t).astype(np.float32)
-    return None
-
-
-def _edge_line(
-    canvas: np.ndarray,
-    a: np.ndarray,
-    b: np.ndarray,
-    color: tuple[int, int, int] = EDGE,
-    width: int = 3,
-) -> None:
-    cv2.line(
-        canvas,
-        (int(round(float(a[0]))), int(round(float(a[1])))),
-        (int(round(float(b[0]))), int(round(float(b[1])))),
-        color,
-        width,
-        cv2.LINE_AA,
-    )
-
-
-
-
-
-# ---- 填充原语 ----
-
-
-def _poly_window(
-    canvas: np.ndarray,
-    frame_bgr: np.ndarray,
-    poly: np.ndarray,
-    shift: tuple[float, float] = (0.0, 0.0),
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[int, int]] | None:
-    """bbox 局部窗口: (画布 roi, 同尺寸源帧窗口(可偏移, 贴边钳制), 多边形掩码, 原点)."""
-    h, w = canvas.shape[:2]
-    p = np.round(poly).astype(np.int32)
-    x0, y0 = max(0, p[:, 0].min() - 1), max(0, p[:, 1].min() - 1)
-    x1, y1 = min(w, p[:, 0].max() + 2), min(h, p[:, 1].max() + 2)
-    if x1 <= x0 or y1 <= y0:
-        return None
-    bw, bh = x1 - x0, y1 - y0
-    sx = int(np.clip(x0 + shift[0], 0, w - bw))
-    sy = int(np.clip(y0 + shift[1], 0, h - bh))
-    mask = np.zeros((bh, bw), np.uint8)
-    cv2.fillPoly(mask, [p - (x0, y0)], 255)
-    return canvas[y0:y1, x0:x1], frame_bgr[sy : sy + bh, sx : sx + bw], mask, (x0, y0)
-
-
-def _fill(
-    canvas: np.ndarray,
-    frame_bgr: np.ndarray,
-    poly: np.ndarray,
-    fx: FaceEffect,
-    shift: tuple[float, float] = (0.0, 0.0),
-    alpha: float = 1.0,
-    shade: float = 1.0,
-) -> None:
-    """把 poly 围出的区域填成 fx(背景窗口(uv+shift)) —— 三种风格唯一的上色出口.
-
-    早先有 _cmap_fill / _fx_fill / _mirror_fill 三个函数, 骨架逐字相同、只有
-    "怎么把 src 变成颜色"那一行不同。现在那一行外提成 FaceEffect, 三合一。
-
-    alpha<1 时与画布已有内容混合 —— 玻璃盒靠它拿到"透"的质感; shade<1 时
-    整面压暗 —— 环境光照(Lambert)从这里进, 亮度是乘法, 透明度是混合, 两个
-    通道互不污染。
-    """
-    got = _poly_window(canvas, frame_bgr, poly, shift)
-    if got is None:
-        return
-    roi, src, mask, _ = got
-    out = np.ascontiguousarray(fx(src))
-    if shade < 0.999:
-        cv2.convertScaleAbs(out, dst=out, alpha=shade)
-    if alpha < 1.0:
-        out = cv2.addWeighted(out, alpha, roi, 1.0 - alpha, 0.0)
-    cv2.copyTo(out, mask, roi)
-
-
 def _shade_of(n: np.ndarray) -> float:
     """Lambert 光照系数: 法线越朝向 _LIGHT 越亮, 背光压到 SHADE_MIN."""
     nn = n / max(float(np.linalg.norm(n)), 1e-6)
@@ -283,7 +189,7 @@ def _stroke_edges(
             e = (a, b) if a < b else (b, a)
             if e not in drawn:
                 drawn.add(e)
-                _edge_line(canvas, scr[a], scr[b], color, width)
+                edge_line(canvas, scr[a], scr[b], color, width)
 
 
 class VectorOverlayRenderer:
@@ -498,7 +404,7 @@ class VectorOverlayRenderer:
         if max(gapL, gapR) < PINCH_SHUT_PX:
             perp = np.array([-span_v[1], span_v[0]], np.float32) / span
             for s in (-2.0, 2.0):
-                _edge_line(canvas, cL + perp * s, cR + perp * s)
+                edge_line(canvas, cL + perp * s, cR + perp * s)
             return
 
         u = span_v / span
@@ -509,7 +415,7 @@ class VectorOverlayRenderer:
 
         # 角点钉在指尖上(实测偏差 ≤0.13×捏距): TL=左食指 BL=左拇指 BR=右拇指 TR=右食指
         # 顶边×底边相交 → 麻花态: 两个交叉三角翼, 右翼后画(压在前面)
-        x = _seg_cross(iL, iR, tR, tL)
+        x = seg_cross(iL, iR, tR, tL)
         faces: list[tuple[np.ndarray, float, float]]  # (poly, b, 采样偏移方向)
         if x is not None:
             faces = [
@@ -523,7 +429,7 @@ class VectorOverlayRenderer:
             # 折起的面: 镜面采样点沿跨距方向外移, 采到别处(亮墙反相成暗面)
             shift_v = u * (side * (1.0 - b) * MIRROR_SHIFT * span)
             cool = float(np.clip((COOL_START - b) * COOL_RATE, 0.0, 1.0))
-            _fill(canvas, frame_bgr, poly, fx_mirror(cool), (float(shift_v[0]), float(shift_v[1])))
+            fill(canvas, frame_bgr, poly, fx_mirror(cool), (float(shift_v[0]), float(shift_v[1])))
             pr = np.round(poly).astype(np.int32)
             # 描边只描自由边(整面轮廓), 附 ±2px 色差晕
             cv2.polylines(canvas, [pr + (2, 1)], True, FRINGE_WARM, 1, cv2.LINE_AA)
@@ -547,14 +453,14 @@ class VectorOverlayRenderer:
         self.box.debug += "  " + ("+".join(f.tag for f, _ in vis) or "-")
 
         if not vis:  # 盒高恰好为 0: 所有面零面积, 兜底描一条侧视细线
-            _edge_line(canvas, scr[0], scr[4], width=max(self.box_edge_w, 1))
+            edge_line(canvas, scr[0], scr[4], width=max(self.box_edge_w, 1))
             return
 
         for layer, alpha in ((hid, self.back_alpha), (vis, self.face_alpha)):
             for face, shade in layer:
                 quad = scr[list(face.verts)]
                 shift = (0.0, BOX_SAMPLE_K * length) if face.is_top else (0.0, 0.0)
-                _fill(canvas, frame_bgr, quad, face.fx, shift, alpha, shade)
+                fill(canvas, frame_bgr, quad, face.fx, shift, alpha, shade)
                 if face.is_top and layer is vis:
                     self._glitch(canvas, frame_bgr, quad, seed)
 
@@ -577,7 +483,7 @@ class VectorOverlayRenderer:
         for layer, alpha in ((hid, self.back_alpha), (vis, self.face_alpha)):
             for face, shade in layer:
                 quad = scr[list(face.verts)]
-                _fill(canvas, frame_bgr, quad, face.fx, (0.0, 0.0), alpha, shade)
+                fill(canvas, frame_bgr, quad, face.fx, (0.0, 0.0), alpha, shade)
                 if face.is_top and layer is vis:
                     self._glitch(canvas, frame_bgr, quad, seed)
         if self.box_edge_w > 0:
@@ -614,7 +520,7 @@ class VectorOverlayRenderer:
         layers.sort(key=lambda v: v[0])  # 由远及近
         for _, face, scr4, is_front, shade in layers:
             alpha = self.face_alpha if is_front else self.back_alpha
-            _fill(canvas, frame_bgr, scr4, face.fx, (0.0, 0.0), alpha, shade)
+            fill(canvas, frame_bgr, scr4, face.fx, (0.0, 0.0), alpha, shade)
             if face.is_top and is_front:
                 self._glitch(canvas, frame_bgr, scr4, seed)
 
@@ -641,7 +547,7 @@ class VectorOverlayRenderer:
 
     def _glitch(self, canvas: np.ndarray, frame_bgr: np.ndarray, top: np.ndarray, seed: int) -> None:
         """蓝顶面横条故障: 水平位移的原色背景条(不染蓝)."""
-        got = _poly_window(canvas, frame_bgr, top)
+        got = poly_window(canvas, frame_bgr, top)
         if got is None:
             return
         roi, _, mask, (x0, y0) = got
@@ -680,10 +586,10 @@ class VectorOverlayRenderer:
 
         # 实测分层: 黄头带 / X-ray 中窗(左右内缩7%) / 白分隔线 / 悬出的红脚带
         mid = band(0.20, 0.94, 0.07, 0.93)
-        _fill(canvas, frame_bgr, mid, _fx_lut(XRAY_CMAP))
-        _fill(canvas, frame_bgr, band(0.0, 0.20), _fx_lut(YELLOW_CMAP))
-        _fill(canvas, frame_bgr, band(0.94, 1.02), _fx_lut(WHITE_CMAP))
-        _fill(canvas, frame_bgr, band(1.02, 1.28), _fx_lut(RED_CMAP))
+        fill(canvas, frame_bgr, mid, _fx_lut(XRAY_CMAP))
+        fill(canvas, frame_bgr, band(0.0, 0.20), _fx_lut(YELLOW_CMAP))
+        fill(canvas, frame_bgr, band(0.94, 1.02), _fx_lut(WHITE_CMAP))
+        fill(canvas, frame_bgr, band(1.02, 1.28), _fx_lut(RED_CMAP))
         # 中窗左右侧缘的黄色细线(原效果唯一的"描边")
-        _edge_line(canvas, mid[0], mid[3], BANNER_YELLOW, 2)
-        _edge_line(canvas, mid[1], mid[2], BANNER_YELLOW, 2)
+        edge_line(canvas, mid[0], mid[3], BANNER_YELLOW, 2)
+        edge_line(canvas, mid[1], mid[2], BANNER_YELLOW, 2)
